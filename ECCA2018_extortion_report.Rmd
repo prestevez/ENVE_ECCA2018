@@ -1,0 +1,1607 @@
+---
+title: "Extortion in Mexico: Who pays and why?"
+author: "Patricio R. Estevez Soto"
+email: "patricio.estevez.14@ucl.ac.uk"
+date: "05/05/2018"
+output:
+  md_document:
+    variant: "markdown"
+pandoc_args: "--smart"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      comment="",
+                      cache=TRUE,
+                      dev=c("png", "CairoPDF"),
+                      error=TRUE)
+options(knitr.kable.NA = '---')
+```
+
+# Introduction
+
+This document contains the script and results for a research project on extortion against businesses in Mexico.
+
+Previous research has found that extortion against businesses is acutely concentrated on a few businesses who experience more than half of all extortion incidents in the country as repeat extortion victimizations. That project found that the rate at which businesses suffer extortion is mostly determined by their characteristics---such as their age, whether they are a restaurant, the number of corruption incidents they have suffered, and their size---and to a lesser extent, to the characteristics of the state where they are located---which include the state homicide rate and other unmeasured between-state differences.
+
+Nonetheless, that research did not consider that most extortion victims do not comply with extortion demands. Thus this project aims to explore the distribution of successful extortion incidents, and identify the incident, victim and area characteristics associated with a higher likelihood of complying with extortion.
+
+The incident-level characteristics that will be explored are:
+
+- month
+- time of day
+- number of offenders
+- victim's relationship to the offender
+- use of a weapon
+- type of weapon
+- use of violence
+- whether the incident was reported to the authorities (MP + other)
+- type of extortion
+- what was requested
+- retaliation against business for not complying
+- whether the victim complied with the extortion
+
+The victim-level characteristics are:
+- business type
+- business age
+- business size
+- Victim of corruption
+- number of corruption victimizations, repeat corruption victim
+- number of extortion victimizations
+- repeat extortion victim
+
+Area-level characteristics:
+- State
+- State homicides
+- State population (control)
+Add more stuff here
+
+# Set up, data input and pre-process
+
+## Session info
+
+We first check details of the session and system, and for reproducibility, we set the random seed.
+
+```{r session, cache=FALSE}
+starttime <- proc.time()
+date()
+sessionInfo()
+set.seed(42)
+options(scipen=0)
+```
+
+## Load packages and functions
+
+Next we load the packages that we will use.
+
+```{r packages}
+
+library(Cairo)
+library(glmmTMB)
+library(victim)
+library(tidyverse)
+library(lme4)
+
+read.dbf <- foreign::read.dbf
+getURL <- RCurl::getURL
+kable <- knitr::kable
+melt <- reshape2::melt
+lrtest <- lmtest::lrtest
+select <- dplyr::select
+
+
+sessionInfo()
+
+```
+
+required packages thus far:
+
+- `foreign`
+- `classInt`
+- `tidyverse`
+- `glmmTMB`
+- `RCurl`
+- `victim`
+- `knitr`
+- `lmtest`
+- `lazyeval`
+- `car`
+- `lme4`
+- `devtools`
+- `Cairo`
+
+```{r functions}
+
+mylog <- function(x, center = FALSE) 
+{
+    if(min(x) <= 0) {tlog <- log1p}
+    else {tlog <- log}
+    
+    logx <- tlog(x)
+    
+    if(isTRUE(center))
+    {
+        logx <- logx - tlog(mean(x))
+    }
+    
+    return(logx)
+    
+}
+
+multi_glm <- function(data, response, predictor, family = binomial(), ...)
+{
+    # Function that fits a glm and returns:
+    # slope, slope p value, loglik, LR Test p value,
+    
+    glm_form <- y ~ x
+    lazyeval::f_lhs(glm_form) <- lazyeval::uq(response)
+    lazyeval::f_rhs(glm_form) <- lazyeval::uq(predictor)
+    
+    mod <- glm(formula = glm_form, data = data, family = family, ...)
+    
+    # Gather results into a data frame
+    out = data.frame(slope = coef(mod)[2:length(coef(mod))],
+                     pval = summary(mod)$coefficients[2:length(coef(mod)),4])
+    
+    out$s1 <- victim::add_stars(out$pval)
+    
+    out2 <- data.frame(ll = logLik(mod)[1],
+                      LRTpval = anova(mod, test = "LRT")[2,5])
+    out2$s2 <- victim::add_stars(out2$LRTpval)
+        
+    out[1,4] <- out2$ll
+    out[1,5] <- out2$LRTpval
+    out[1,6] <- out2$s2
+    names(out)[4:6] <- names(out2)
+    # out <- cbind(out,out2)
+    
+    return(out)
+}
+
+vif <- function(form, data, family = "binomial") 
+{
+    if(!is_formula(form)) {form <- formula(form)}
+    
+    lmmod <- glm(form, data = data,  family = family)
+    
+    vifs <- car::vif(lmmod)
+    
+    return(vifs)
+}
+
+null_glm_ll <- function(dv, data, family = binomial(), ...)
+{
+    glm_form <- y ~ 1
+    lazyeval::f_lhs(glm_form) <- lazyeval::uq(dv)
+    
+    model <-  glm(formula = glm_form, data = data, family = family, ...)
+    
+    out <- data.frame(slope = NA, 
+                      pval = NA, 
+                      s1 = NA,
+                      ll= logLik(model),
+                      LRTpval = NA,
+                      s2 = NA)
+    rownames(out) <- "Null"
+    return(out)
+}
+
+
+propfun <- function(dv, w, iv, dat) 
+{
+    dat %>%
+        group_by_(iv) %>%
+        summarise_(lazyeval::interp(~ sum(x), x = as.name(dv)),
+                   lazyeval::interp(~ sum(x), x = as.name(w))) -> dat2
+    
+    dat2 <- data.frame(dat2)
+    
+    pt <- prop.test(dat2[,2], dat2[,3])
+    
+    names(pt$estimate) <- dat2[,iv]
+    pt$data.name <- paste0(dv, " out of ", w)
+    return(pt)
+}
+
+tmbresults <- function(tmbmodel)
+{
+    print(summary(tmbmodel))
+    print("Confidence Intervals (Log-odds)")
+    print(confint(tmbmodel))
+    print("Confidence Intervals (Odd Ratio)")
+    print(exp(confint(tmbmodel)))
+    print(lmtest::lrtest(tmbmodel))
+}
+
+dropalltest <- function(mod)
+{
+    dropped <- drop1(mod, test = "Chisq", trace = TRUE)
+    print(dropped)
+    print(kable(dropped))
+}
+
+
+```
+
+## Load data
+
+We first load and arrange the area and victim level data
+
+```{r test-setting}
+
+### Change if not in testing settings
+testing <- TRUE
+
+
+if(testing == TRUE)
+{
+    download.file("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014cuest_ciega_2014.dbf", 
+                  destfile = "enve2014cuest_ciega_2014.dbf", method = "curl")
+    download.file("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014delitos_ciega_2014.dbf", 
+                  destfile = "enve2014delitos_ciega_2014.dbf", method = "curl")
+    
+}
+
+list.files()
+
+```
+
+
+```{r victim-level}
+enve_all <- read.dbf("enve2014cuest_ciega_2014.dbf")
+
+cat_entidades <- read.csv(text = getURL("https://raw.githubusercontent.com/prestevez/datahouse/master/cat_entidades.csv"), head=TRUE)
+state_level_data <- read.csv(text = getURL("https://raw.githubusercontent.com/prestevez/datahouse/master/state_level_data_2013.csv"), header=TRUE) 
+state_level_data <- merge(state_level_data,
+                          cat_entidades, by="CVE_ENT", all.x=TRUE)
+scode <- read.csv(text = getURL("https://raw.githubusercontent.com/prestevez/datahouse/master/secode.csv"), head=TRUE)
+scode$Code <- scode$Code*10000
+
+# Prepare data for analysis
+# Selecting only the relevant variables
+
+enve_test <- data.frame(extortions=as.integer(as.character(enve_all$P26_10)))
+
+enve_test$extortion_victim <- enve_all$P25_10
+enve_test$extortions[enve_test$extortion_victim == 2] <- 0
+summary(enve_test$extortions)
+table(enve_test$extortions)
+
+enve_test$extortions[is.na(enve_test$extortions)] <- 0
+
+summary(enve_test$extortions)
+table(enve_test$extortions)
+
+enve_test$rep_extortion_victim <- factor(enve_test$extortions)
+levels(enve_test$rep_extortion_victim) <- c(0, 0,
+                    rep(1, length(levels(enve_test$rep_extortion_victim)) - 2))
+
+summary(enve_test$rep_extortion_victim)
+
+enve_test$rep_extortions <- enve_test$extortions
+enve_test$rep_extortions[enve_test$rep_extortions > 0] <- enve_test$rep_extortions[enve_test$rep_extortions > 0] - 1
+
+summary(enve_test$rep_extortions)
+table(enve_test$rep_extortions)
+
+
+enve_test$CVE_UNICA <- as.integer(as.character(enve_all$ID_CONSECU))
+
+enve_test$bribes <- as.integer(as.character(enve_all$P33))
+summary(enve_test$bribes)
+
+# 4 bribe cats
+enve_test$bribe1 <- enve_all$P29_1
+enve_test$bribe2 <- enve_all$P30_1
+enve_test$bribe3 <- enve_all$P31_1
+enve_test$bribe4 <- enve_all$P32_1
+
+enve_test$bribes[with(enve_test,
+                        bribe1 == 2 &
+                        bribe2 == 2 &
+                        bribe3 == 2 &
+                        bribe4 == 2)] <- 0
+
+summary(enve_test$bribes)
+
+enve_test$bribes[is.na(enve_test$bribes)] <- 0
+
+enve_test$bribe_victim <- factor(enve_test$bribes)
+levels(enve_test$bribe_victim) <- c(0,
+                                    rep(1, length(levels(enve_test$bribe_victim)) - 1))
+summary(enve_test$bribe_victim)
+
+enve_test$rep_bribe <- factor(enve_test$bribes)
+levels(enve_test$rep_bribe) <- c(0, 0, rep(1,
+                                           length(levels(enve_test$rep_bribe)) - 2))
+summary(enve_test$rep_bribe)
+
+enve_test$bribe_cats <- factor(enve_test$bribes)
+levels(enve_test$bribe_cats) <- c(0, 1, 2, rep("3+",
+                                            length(levels(enve_test$bribe_cats)) - 3))
+summary(enve_test$bribe_cats)
+
+enve_test$CVE_ENT <- as.integer(as.character(enve_all$CVE_ENT))
+
+enve_test$size <- enve_all$ID_ESTRATO
+levels(enve_test$size) <- c("Large", "Medium", "Small", "Micro")
+
+enve_test$sector <- enve_all$SECTOR_FIN
+
+# subsector
+enve_test$tempsub <- as.integer(as.character(enve_all$P1_1B))
+enve_test$subsector <- cut(enve_test$tempsub, scode$Code, right=FALSE)
+levels(enve_test$subsector) <- scode$Sector
+enve_test$subsector <- droplevels(enve_test$subsector)
+enve_test$subsector <- relevel(enve_test$subsector, ref="Retail")
+levels(enve_test$subsector)
+
+enve_test$subsector_safe <- enve_test$subsector
+
+enve_test$subsector <- as.character(enve_test$subsector)
+
+enve_test$subsector[enve_test$subsector %in%
+                      c("Mining",
+                        "Utilities",
+                        "Construction")] <- "Industry"
+
+enve_test$subsector[enve_test$subsector %in%
+                      c("Media",
+                        "Maintenance",
+                        "Other",
+                        "Corporate", 
+                        "Finance",
+                        "Health",
+                        "Leisure",
+                        "Education", 
+                        "Prof. services",
+                        "Real estate")] <- "Other serv."
+
+
+enve_test$subsector <- as.factor(enve_test$subsector)
+enve_test$subsector <- relevel(enve_test$subsector, ref="Retail")
+levels(enve_test$subsector)
+summary(enve_test$subsector)
+
+enve_test$years <- 2013 - as.numeric(as.character(enve_all$P3))
+summary(enve_test$years)
+
+intyears <- classInt::classIntervals(enve_test$years, 5, style="quantile")
+enve_test$yearsquant <- cut(enve_test$years, intyears$brks, right=TRUE,
+                            include.lowest = TRUE)
+
+enve_test <- merge(enve_test, state_level_data, by="CVE_ENT", all.x=TRUE)
+
+length(enve_test$extortions[is.na(enve_test$extortions)])
+length(enve_test$bribes[is.na(enve_test$bribes)])
+
+## enve_test$extortions[is.na(enve_test$extortions)] <- 0
+## enve_test$bribes[is.na(enve_test$bribes)] <- 0
+
+summary(enve_test)
+
+```
+
+Next we load incident-level data:
+
+```{r incident-level}
+
+enve_incidents_all <- read.dbf("enve2014delitos_ciega_2014.dbf")
+
+# Selecting only those relevant for extortion (code 10)
+
+enve_incidents_all$delito <- as.integer(as.character(enve_incidents_all$ID_DELITO))
+
+enve_incidents <- enve_incidents_all[enve_incidents_all$delito == 10,]
+
+# Selecting those relevant for our study
+
+incident_df <- data.frame(CVE_UNICA=as.integer(as.character(enve_incidents$ID_CONSECU)))
+
+incident_df$delito <- enve_incidents$delito
+
+incident_df$n_offenders <- enve_incidents$M1_8
+summary(incident_df$n_offenders)
+levels(incident_df$n_offenders) <- c(1:3, "4+", "4+", "4+", "DK/DA")
+summary(incident_df$n_offenders)
+
+incident_df$n_offenders_NA <-  incident_df$n_offenders
+incident_df$n_offenders_NA[is.na(incident_df$n_offenders)] <- "DK/DA"
+summary(incident_df$n_offenders_NA)
+
+incident_df$uk_n_offenders <- incident_df$n_offenders_NA
+levels(incident_df$uk_n_offenders)[1:4] <- "known"
+
+incident_df$n_offenders_num <- enve_incidents$M1_8
+summary(incident_df$n_offenders_num)
+levels(incident_df$n_offenders_num) <- c(1:6, 0)
+summary(incident_df$n_offenders_num)
+incident_df$n_offenders_num[is.na(incident_df$n_offenders_num)] <- 0
+incident_df$n_offenders_num <- as.numeric(as.character(incident_df$n_offenders_num))
+table(incident_df$n_offenders_num)
+
+incident_df$n_offenders_num <- incident_df$n_offenders_num - 1 
+
+
+## Data imputation for missing variables?
+
+incident_df$rel_offenders <- enve_incidents$M1_11
+levels(incident_df$rel_offenders) <- c("Known", "Known",
+                                       "Known", "Known",
+                                       "Total stranger", "DK/DA")
+incident_df$rel_offenders <- relevel(incident_df$rel_offenders, ref="Total stranger")
+summary(incident_df$rel_offenders)
+
+incident_df$rel_offenders_NA <- incident_df$rel_offenders
+incident_df$rel_offenders_NA[is.na(incident_df$rel_offenders_NA)] <- "DK/DA"
+summary(incident_df$rel_offenders_NA)
+
+incident_df$had_weapon <- enve_incidents$M1_13
+levels(incident_df$had_weapon) <- c("Yes", "No", "DK/DA")
+incident_df$had_weapon <- relevel(incident_df$had_weapon, ref="No")
+summary(incident_df$had_weapon)
+
+incident_df$had_weapon_NA <- incident_df$had_weapon
+incident_df$had_weapon_NA[is.na(incident_df$had_weapon_NA)] <- "DK/DA"
+summary(incident_df$had_weapon_NA)
+
+incident_df$extortion_type <- as.character(enve_incidents$M5_1)
+incident_df$extortion_type <- as.factor(incident_df$extortion_type)
+levels(incident_df$extortion_type) <- c("Remote", "Remote", "Street",
+                                        "Premises", "Cobro de piso", "Other")
+levels(incident_df$extortion_type)
+summary(incident_df$extortion_type)
+
+incident_df$extortion_type_bin <- as.character(enve_incidents$M5_1)
+incident_df$extortion_type_bin <- as.factor(incident_df$extortion_type_bin)
+levels(incident_df$extortion_type_bin) <- c("Remote", "Remote", "In person",
+                                        "In person", "In person", "Other")
+levels(incident_df$extortion_type_bin)
+summary(incident_df$extortion_type_bin)
+
+incident_df$complied <- enve_incidents$M5_3
+levels(incident_df$complied) <-  c("Yes", "No", "DK/DA")
+incident_df$complied <- relevel(incident_df$complied, ref="No")
+summary(incident_df$complied)
+
+
+incident_df$complied_bin <- enve_incidents$M5_3
+levels(incident_df$complied_bin) <-  c("Yes", "No", NA)
+incident_df$complied_bin <- relevel(incident_df$complied_bin, ref="No")
+summary(incident_df$complied_bin)
+
+incident_df$complied_bin_NA <- incident_df$complied_bin
+incident_df$complied_bin_NA[is.na(incident_df$complied_bin_NA)] <- "No"
+summary(incident_df$complied_bin_NA)
+
+incident_df <- subset(incident_df, extortion_type != "Other")
+incident_df$extortion_type <- droplevels(incident_df$extortion_type)
+incident_df$extortion_type_bin <- droplevels(incident_df$extortion_type_bin)
+
+summary(incident_df)
+```
+
+Next we merge both incident-level and victim-level tables.
+
+```{r incident-victim-merge}
+enve_incvic <- merge(incident_df, enve_test, by="CVE_UNICA")
+
+nrow(enve_incvic)
+nrow(incident_df)
+```
+
+# EDA: Incident level
+
+Before progressing to the modeling exercise, we need to explore the distribution of the different variables. See how many missing values are present, as well as exploring possible bivariate relationships, both between the IV and the DV, as well as between the IVs.
+
+```{r summary}
+summary(enve_incvic)
+names(enve_incvic)
+```
+
+## EDA
+
+### Incident-level variables
+
+First check the relationships between compliance and incident-level DVs
+
+```{r bivariate-incident-noNA}
+
+ivs <- c("extortion_type",
+         "extortion_type_bin",
+         "n_offenders_NA",
+         "uk_n_offenders",
+         "rel_offenders_NA",
+         "had_weapon_NA")
+
+biv_inc_rels_noNA <- batch_chisq(df = enve_incvic, DV = "complied_bin_NA", IV = ivs)
+
+kable(chisq_tb(biv_inc_rels_noNA, stars = TRUE), "pandoc",
+      caption = "Chi-square tests between 'complied_bin_NA' and a set of DV")
+
+print_kables(chisq_list(biv_inc_rels_noNA, option = "observed", print_option = "pandoc"))
+
+print_kables(chisq_list(biv_inc_rels_noNA, option = "ratio", print_option = "pandoc"))
+
+print_kables(chisq_list(biv_inc_rels_noNA, option = "percent", print_option = "pandoc"))
+
+```
+
+
+Repeat considering NAs
+
+```{r bivariate-incident}
+
+ivs <- c("extortion_type",
+         "extortion_type_bin",
+         "n_offenders",
+         "rel_offenders",
+         "had_weapon")
+
+biv_inc_rels <- batch_chisq(df = enve_incvic, DV = "complied_bin", IV = ivs)
+
+kable(chisq_tb(biv_inc_rels, stars = TRUE), "pandoc",
+      caption = "Chi-square tests between 'complied_bin' and a set of DV")
+
+print_kables(chisq_list(biv_inc_rels, option = "observed", print_option = "pandoc"))
+
+print_kables(chisq_list(biv_inc_rels, option = "ratio", print_option = "pandoc"))
+
+print_kables(chisq_list(biv_inc_rels, option = "percent", print_option = "pandoc"))
+
+```
+
+Repeat considering NAs except for compliance
+
+```{r bivariate-incident}
+
+ivs <- c("extortion_type",
+         "extortion_type_bin",
+         "n_offenders",
+         "rel_offenders",
+         "had_weapon")
+
+biv_inc_rels <- batch_chisq(df = enve_incvic, DV = "complied_bin_NA", IV = ivs)
+
+kable(chisq_tb(biv_inc_rels, stars = TRUE), "pandoc",
+      caption = "Chi-square tests between 'complied_bin_NA' and a set of DV")
+
+print_kables(chisq_list(biv_inc_rels, option = "observed", print_option = "pandoc"))
+
+print_kables(chisq_list(biv_inc_rels, option = "ratio", print_option = "pandoc"))
+
+print_kables(chisq_list(biv_inc_rels, option = "percent", print_option = "pandoc"))
+
+```
+
+
+
+Investigate any numericals 
+
+Do incidents that lead to compliance involve more offenders in average?
+
+```{r biv-inc-numerical}
+
+t.test(n_offenders_num ~ complied_bin_NA , data = subset(enve_incvic, n_offenders_num > -1))
+
+t.test(n_offenders_num ~ complied_bin , data = subset(enve_incvic, n_offenders_num > -1))
+
+### Difference in offender numbers in no compliance in two deffs of the complied variables
+t.test(enve_incvic[which(enve_incvic$complied_bin == "No" & enve_incvic$'n_offenders_num' > -1),'n_offenders_num'], 
+       enve_incvic[which(enve_incvic$complied_bin_NA == "No" & enve_incvic$'n_offenders_num' > -1),'n_offenders_num'])
+
+
+
+```
+
+
+Test for cross IV relationships
+
+```{r inc-level-cross-IV-rels}
+
+ivs <- c("extortion_type",
+         "extortion_type_bin",
+         "n_offenders_NA",
+         "uk_n_offenders",
+         "rel_offenders_NA",
+         "had_weapon_NA")
+
+inc_cross_IV_NA <- lapply(ivs, function(x) batch_chisq(df = enve_incvic, DV = x, IV = ivs))
+
+inc_cross_IV_NA
+
+kable(chisq_tb(biv_inc_rels_noNA, stars = TRUE), "pandoc",
+      caption = "Chi-square tests between 'complied_bin_NA' and a set of DV")
+
+lapply(inc_cross_IV_NA, function(x) kable(chisq_tb(x, stars = TRUE), "pandoc",
+                                          caption = "Chi-square tests between DVs"))
+
+
+```
+
+
+## Business level variables
+
+Create a DF grouping variables per business. Particularly, create times complied by times extorted.
+
+```{r group-business}
+
+# enve_incvic %>%
+#     group_by(CVE_UNICA) %>%
+#     summarise(extincs = n(),
+#               complied = sum(complied_bin_NA == "Yes"),
+#               remote = sum(extortion_type == "Remote"),
+#               street = sum(extortion_type == "Street"),
+#               premises = sum(extortion_type == "Premises"),
+#               piso = sum(extortion_type == "Cobro de piso"),
+#               inperson = sum(extortion_type_bin == "In person"),
+#               comp_remote  = sum(extortion_type_bin == "Remote" & complied_bin_NA == "Yes"),
+#               comp_inperson  = sum(extortion_type_bin == "In person" & complied_bin_NA == "Yes"),
+#               comp_street  = sum(extortion_type == "Street" & complied_bin_NA == "Yes"),
+#               comp_premises  = sum(extortion_type == "Premises" & complied_bin_NA == "Yes"),
+#               comp_piso  = sum(extortion_type == "Cobro de piso" & complied_bin_NA == "Yes"),
+#               extortions = max(extortions),
+#               rep_extortions = max(rep_extortions),
+#               bribecount = max(bribes),
+#               bribevic = ifelse(bribecount == 0, 0, 1),
+#               yearsnum = max(years),
+#               yearsquant = first(yearsquant),
+#               size = first(size),
+#               subsector = first(subsector)) 
+
+enve_incvic %>%
+    group_by(CVE_UNICA) %>%
+    summarise(extincs = n(),
+              complied = sum(complied_bin_NA == "Yes"),
+              remote = sum(extortion_type == "Remote"),
+              street = sum(extortion_type == "Street"),
+              premises = sum(extortion_type == "Premises"),
+              piso = sum(extortion_type == "Cobro de piso"),
+              inperson = sum(extortion_type_bin == "In person"),
+              comp_remote  = sum(extortion_type_bin == "Remote" & complied_bin_NA == "Yes"),
+              comp_inperson  = sum(extortion_type_bin == "In person" & complied_bin_NA == "Yes"),
+              comp_street  = sum(extortion_type == "Street" & complied_bin_NA == "Yes"),
+              comp_premises  = sum(extortion_type == "Premises" & complied_bin_NA == "Yes"),
+              comp_piso  = sum(extortion_type == "Cobro de piso" & complied_bin_NA == "Yes")) -> enve_bus
+
+
+enve_bus <- merge(enve_bus, enve_test, by="CVE_UNICA", all.x = TRUE)
+
+summary(enve_bus)
+
+```
+
+Plot numerical relationships
+
+```{r business-level-relationships-plots}
+
+
+p_comp_inc_exts <- ggplot(enve_bus, aes(x = extortions, y = complied/extincs))
+
+p_comp_inc_exts + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = extincs),
+                formula = y ~ poly(x, degree = 2, raw = TRUE), linetype = 3) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = extincs),
+                formula = y ~ mylog(x), linetype = 2)  + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = extincs),
+                formula = y ~ poly(mylog(x), degree=2, raw = TRUE), linetype = 4)
+
+p_comp_inc_repexts <- ggplot(enve_bus, aes(x = rep_extortions, y = complied/extincs))
+
+p_comp_inc_repexts + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs))
+
+
+p_comp_inc_bribes <- ggplot(enve_bus, aes(x = bribes, y = complied/extincs))
+
+p_comp_inc_bribes + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, degree = 2, raw = TRUE), linetype = 3)  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log1p(x), linetype = 2)
+
+p_comp_inc_bribe_vic <- ggplot(enve_bus, aes(x = bribe_victim, y = complied/extincs))
+
+p_comp_inc_bribe_vic + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs))
+
+p_comp_inc_years <- ggplot(enve_bus, aes(x = years, y = complied/extincs))
+
+p_comp_inc_years + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, degree = 2, raw = TRUE), linetype = 3)
+
+
+enve_bus %>%
+    select(extortions, 
+           rep_extortions,
+           bribes, 
+           years, 
+           comp_inperson,
+           comp_remote,
+           inperson,
+           remote) -> enve_temp
+
+reshape2::melt(enve_temp, id.vars = c("extortions",
+                                      "rep_extortions",
+                                      "bribes",
+                                      "years",
+                                      "inperson",
+                                      "remote")) -> enve_temp
+
+
+names(enve_temp)[7:8] <- c("group", "compliance")
+
+
+reshape2::melt(enve_temp, id.vars = c("extortions",
+                                      "rep_extortions",
+                                      "bribes",
+                                      "years",
+                                      "compliance",
+                                      "group") ) -> enve_temp
+
+names(enve_temp)[8] <- "weight" 
+
+summary(enve_temp)
+
+levels(enve_temp$group) <- levels(enve_temp$variable)
+
+enve_temp %>%
+    filter(variable == group) -> enve_temp
+
+p_ext_comp_by_type <- ggplot(enve_temp, aes(x = extortions, y = compliance/weight, color = variable))
+
+p_ext_comp_by_type + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight)) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight),
+                formula = y ~ poly(x, degree = 2, raw = TRUE), linetype = 3) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight),
+                formula = y ~ mylog(x), linetype = 2)  + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight),
+                formula = y ~ poly(mylog(x), degree=2, raw = TRUE), linetype = 4)
+
+
+p_repext_comp_by_type <- ggplot(enve_temp, aes(x = rep_extortions, y = compliance/weight, color = variable))
+
+p_repext_comp_by_type + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))
+
+p_bribes_comp_by_type <- ggplot(enve_temp, aes(x = bribes, y = compliance/weight, color = variable))
+
+p_bribes_comp_by_type + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight)) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight),
+                formula = y ~ poly(x, degree = 2, raw = TRUE), linetype = 3) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight),
+                formula = y ~ log1p(x), linetype = 2)
+
+p_years_comp_by_type <- ggplot(enve_temp, aes(x = years, y = compliance/weight, color = variable))
+
+p_years_comp_by_type + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight)) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight),
+                formula = y ~ poly(x, degree = 2, raw = TRUE), linetype = 3)
+
+
+```
+
+
+Still need to test relationships between props and numericals, GLM?
+
+```{r business-level-relationships-glms}
+
+predvars <- c(~ extortions, 
+              ~ mylog(extortions),
+              ~ poly(extortions, degree = 2, raw = FALSE),
+              ~ poly(mylog(extortions), degree = 2, raw = FALSE),
+              ~ rep_extortion_victim,
+              ~ rep_extortions,
+              ~ bribes,
+              ~ log1p(bribes),
+              ~ poly(bribes, degree = 2, raw = FALSE),
+              ~ poly(log1p(bribes), degree = 2, raw = FALSE),
+              ~ bribe_victim,
+              ~ bribe_cats,
+              ~ size, 
+              ~ subsector,
+              ~ years,
+              ~ log1p(years),
+              ~ poly(years, degree = 2, raw = FALSE),
+              ~ poly(log1p(years), degree = 2, raw = FALSE),
+              ~ yearsquant)
+
+lapply(predvars, function(z) tryCatch(multi_glm(data = enve_bus, 
+                                       response = ~ cbind(complied, extincs),
+                                       predictor = z), 
+                                      error = function(e) NULL)) -> biv_bus_glms
+
+
+null_bus1 <- null_glm_ll(dv = ~ cbind(complied, extincs), data = enve_bus)
+
+summary(glm(cbind(complied, extincs) ~ 1, data = enve_bus, family = "binomial"))
+summary(glm(cbind(complied, extincs) ~ extortions, data = enve_bus, family = "binomial"))
+
+summary(enve_bus)
+
+
+biv_bus_glms_all <- do.call(rbind, biv_bus_glms)
+
+biv_bus_glms_all <- rbind(null_bus1, biv_bus_glms_all)
+
+kable(biv_bus_glms_all, digits = 2, 
+      caption = "Response: cbind(complied, extincs)")
+
+
+lapply(predvars, function(z) tryCatch(multi_glm(data = enve_bus, 
+                                       response = ~ cbind(comp_remote, remote),
+                                       predictor = z), 
+                                      error = function(e) NULL)) -> biv_bus_glms_remote
+
+null_bus2 <- null_glm_ll(dv = ~ cbind(comp_remote, remote), data = enve_bus)
+
+biv_bus_glms_remote_all <- do.call(rbind, biv_bus_glms_remote)
+
+biv_bus_glms_remote_all <- rbind(null_bus2, biv_bus_glms_remote_all)
+
+kable(biv_bus_glms_remote_all, digits = 2, 
+      caption = "Response: cbind(comp_remote, remote)")
+
+
+lapply(predvars, function(z) tryCatch(multi_glm(data = enve_bus, 
+                                       response = ~ cbind(comp_inperson, inperson),
+                                       predictor = z), 
+                                      error = function(e) NULL)) -> biv_bus_glms_inperson
+
+
+null_bus3 <- null_glm_ll(dv = ~ cbind(comp_inperson, inperson), data = enve_bus)
+
+biv_bus_glms_inperson_all <- do.call(rbind, biv_bus_glms_inperson)
+
+biv_bus_glms_inperson_all <- rbind(null_bus3, biv_bus_glms_inperson_all)
+
+kable(biv_bus_glms_inperson_all, digits = 2, 
+      caption = "Response: cbind(comp_inperson, inperson)")
+
+
+
+```
+
+
+
+Check proportions per size, subsector and yearsquant
+
+```{r }
+
+
+ob <- propfun("complied", "extincs", "size", enve_bus)
+
+ob
+
+ivs <- c("size", "subsector", "yearsquant")
+
+compext_proptests <- lapply(ivs, function(x) propfun(dv = "complied",
+                                                     w = "extincs",
+                                                     iv = x,
+                                                     dat = enve_bus))
+
+compext_proptests
+
+comp_rem <- lapply(ivs, function(x) propfun(dv = "comp_remote",
+                                                     w = "remote",
+                                                     iv = x,
+                                                     dat = enve_bus))
+comp_rem
+
+comp_inperson <- lapply(ivs, function(x) propfun(dv = "comp_inperson",
+                                                     w = "inperson",
+                                                     iv = x,
+                                                     dat = enve_bus))
+comp_inperson
+
+
+
+```
+
+
+## State level variables
+
+```{r group-state}
+
+enve_incvic %>%
+    group_by(CVE_ENT) %>%
+    summarise(extincs = n(),
+              complied = sum(complied_bin_NA == "Yes"),
+              remote = sum(extortion_type == "Remote"),
+              street = sum(extortion_type == "Street"),
+              premises = sum(extortion_type == "Premises"),
+              piso = sum(extortion_type == "Cobro de piso"),
+              inperson = sum(extortion_type_bin == "In person"),
+              comp_remote  = sum(extortion_type_bin == "Remote" & complied_bin_NA == "Yes"),
+              comp_inperson  = sum(extortion_type_bin == "In person" & complied_bin_NA == "Yes"),
+              comp_street  = sum(extortion_type == "Street" & complied_bin_NA == "Yes"),
+              comp_premises  = sum(extortion_type == "Premises" & complied_bin_NA == "Yes"),
+              comp_piso  = sum(extortion_type == "Cobro de piso" & complied_bin_NA == "Yes")) -> enve_state
+
+
+enve_state <- merge(enve_state, state_level_data, by="CVE_ENT", all.x = TRUE)
+
+summary(enve_state)
+
+```
+
+
+ 
+plots of relationships
+
+```{r state-level-plots}
+
+
+p_comp_state_preval <- ggplot(enve_state, aes(x = Prevalence, y = complied/extincs))
+
+p_comp_state_preval + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_comp_state_conc <- ggplot(enve_state, aes(x = Concentration, y = complied/extincs))
+
+p_comp_state_conc + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+
+p_comp_state_bribes <- ggplot(enve_state, aes(x = bribes_abvic , y = complied/extincs))
+
+p_comp_state_bribes + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ x) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3) 
+
+
+
+p_comp_state_deaths <- ggplot(enve_state, aes(x = (defun/poblacion)*100000, y = complied/extincs))
+
+p_comp_state_deaths + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3) +
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 3), linetype = 4)
+
+p_comp_state_wpn <- ggplot(enve_state, aes(x = (defun_arma/defun)*100, y = complied/extincs))
+
+p_comp_state_wpn + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_comp_state_drugs <- ggplot(enve_state, aes(x = drogas, y = complied/extincs))
+
+p_comp_state_drugs + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_comp_state_oc <- ggplot(enve_state, aes(x = do, y = complied/extincs))
+
+p_comp_state_oc + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log1p(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_comp_state_wpn_crimes <- ggplot(enve_state, aes(x = armas, y = complied/extincs))
+
+p_comp_state_wpn_crimes + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_comp_state_pop <- ggplot(enve_state, aes(x = poblacion/100000, y = complied/extincs))
+
+p_comp_state_pop + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3) +
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 3), linetype = 4)
+
+p_comp_state_nbus <- ggplot(enve_state, aes(x = N, y = complied/extincs))
+
+p_comp_state_nbus + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_comp_state_law <- ggplot(enve_state, aes(x = Derecho, y = complied/extincs))
+
+p_comp_state_law + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+
+p_comp_state_comp <- ggplot(enve_state, aes(x = General, y = complied/extincs))
+
+p_comp_state_comp + geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = extincs),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+
+enve_state %>%
+    select(Prevalence, 
+           Concentration,
+           bribes_abvic,
+           defun,
+           defun_arma,
+           poblacion,
+           drogas,
+           do,
+           armas,
+           N,
+           Derecho,
+           General,
+           comp_inperson,
+           comp_remote,
+           inperson,
+           remote) %>%
+    mutate(defun_rate = (defun/poblacion)*100000,
+           defun_arma_rt = (defun_arma/defun)*100,
+           pob100k = poblacion/100000,
+           do = do + 1) %>%
+    select(-defun,
+           -defun_arma,
+           -poblacion)-> enve_temp2
+
+
+
+reshape2::melt(enve_temp2, id.vars = c("Prevalence",
+                                      "Concentration",
+                                      "bribes_abvic",
+                                      "defun_rate",
+                                      "inperson",
+                                      "remote",
+                                      "defun_arma_rt",
+                                      "pob100k",
+                                      "drogas",
+                                      "do",
+                                      "armas",
+                                      "N",
+                                      "Derecho",
+                                      "General")) -> enve_temp2
+
+
+names(enve_temp2)[(length(enve_temp2)-1):length(enve_temp2)] <- c("group", "compliance")
+
+
+reshape2::melt(enve_temp2, id.vars = c("Prevalence",
+                                      "Concentration",
+                                      "bribes_abvic",
+                                      "defun_rate",
+                                      "defun_arma_rt",
+                                      "pob100k",
+                                      "drogas",
+                                      "do",
+                                      "armas",
+                                      "N",
+                                      "Derecho",
+                                      "General",
+                                      "compliance",
+                                      "group") ) -> enve_temp2
+
+names(enve_temp2)[length(enve_temp2)] <- "weight" 
+
+levels(enve_temp2$group) <- levels(enve_temp2$variable)
+
+enve_temp2 %>%
+    filter(variable == group) -> enve_temp2
+
+
+#### Change the names of objects
+
+p_ext_comp_by_type_state <- ggplot(enve_temp2, aes(x = Prevalence, y = compliance/weight, color = variable))
+
+p_ext_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_conc_comp_by_type_state <- ggplot(enve_temp2, aes(x = Concentration, y = compliance/weight, color = variable))
+
+p_conc_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_bribes_comp_by_type_state <- ggplot(enve_temp2, aes(x = bribes_abvic, y = compliance/weight, color = variable))
+
+p_bribes_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight)) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(log(x), order = 2, raw = TRUE), linetype = 4)
+
+p_defun_comp_by_type_state <- ggplot(enve_temp2, aes(x = defun_rate, y = compliance/weight, color = variable))
+
+p_defun_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_defun_arma_comp_by_type_state <- ggplot(enve_temp2, aes(x = defun_arma_rt, y = compliance/weight, color = variable))
+
+p_defun_arma_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+
+p_pob_comp_by_type_state <- ggplot(enve_temp2, aes(x = pob100k, y = compliance/weight, color = variable))
+
+p_pob_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_drogas_comp_by_type_state <- ggplot(enve_temp2, aes(x = drogas, y = compliance/weight, color = variable))
+
+p_drogas_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_do_comp_by_type_state <- ggplot(enve_temp2, aes(x = do, y = compliance/weight, color = variable))
+
+p_do_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log1p(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_armas_comp_by_type_state <- ggplot(enve_temp2, aes(x = armas, y = compliance/weight, color = variable))
+
+p_armas_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_N_comp_by_type_state <- ggplot(enve_temp2, aes(x = N, y = compliance/weight, color = variable))
+
+p_N_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_derecho_comp_by_type_state <- ggplot(enve_temp2, aes(x = Derecho, y = compliance/weight, color = variable))
+
+p_derecho_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+p_general_comp_by_type_state <- ggplot(enve_temp2, aes(x = General, y = compliance/weight, color = variable))
+
+p_general_comp_by_type_state + geom_jitter(alpha = 0.3, width = 0.3, height = 0.01) + 
+    stat_smooth(method="glm", method.args=list(family="binomial"), 
+                se=FALSE, aes(weight = weight))  + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ log(x), linetype = 2) + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE, aes(weight = weight),
+              formula = y ~ poly(x, order = 2, raw = TRUE), linetype = 3)
+
+
+
+```
+
+    
+    
+multi_glms
+ 
+```{r state-level-multiglms}
+
+statepredvars <- c(~ Prevalence, 
+              ~ log(Prevalence),
+              ~ poly(Prevalence, degree = 2, raw = FALSE),
+              ~ Concentration,
+              ~ log(Concentration),
+              ~ poly(Concentration, degree = 2, raw = FALSE),
+              ~ bribes_abvic,
+              ~ log(bribes_abvic),
+              ~ poly(bribes_abvic, degree = 2, raw = FALSE),
+              ~ defun_rate,
+              ~ log(defun_rate),
+              ~ poly(defun_rate, degree = 2, raw = FALSE),
+              ~ defun_arma_rt,
+              ~ log(defun_arma_rt),
+              ~ poly(defun_arma_rt, degree = 2, raw = FALSE),
+              ~ pob100k,
+              ~ log(pob100k),
+              ~ poly(pob100k, degree = 2, raw = FALSE),
+              ~ drogas,
+              ~ log(drogas),
+              ~ poly(drogas, degree = 2, raw = FALSE),
+              ~ do,
+              ~ log1p(do),
+              ~ poly(do, degree = 2, raw = FALSE),
+              ~ armas,
+              ~ log(armas),
+              ~ poly(armas, degree = 2, raw = FALSE),
+              ~ N,
+              ~ log(N),
+              ~ poly(N, degree = 2, raw = FALSE),
+              ~ Derecho,
+              ~ log(Derecho),
+              ~ poly(Derecho, degree = 2, raw = FALSE),
+              ~ General,
+              ~ log(General),
+              ~ poly(General, degree = 2, raw = FALSE))
+
+lapply(statepredvars, function(z) tryCatch(multi_glm(data = enve_state, 
+                                       response = ~ cbind(complied, extincs),
+                                       predictor = z), 
+                                      error = function(e) NULL)) -> biv_state_glms
+
+
+null_state1 <- null_glm_ll(dv = ~ cbind(complied, extincs), data = enve_state)
+
+
+biv_state_glms_all <- do.call(rbind, biv_state_glms)
+
+biv_state_glms_all <- rbind(null_state1, biv_state_glms_all)
+
+kable(biv_state_glms_all, digits = 2, 
+      caption = "Response: cbind(complied, extincs)")
+
+
+lapply(statepredvars, function(z) tryCatch(multi_glm(data = enve_state, 
+                                       response = ~ cbind(comp_remote, remote),
+                                       predictor = z), 
+                                      error = function(e) NULL)) -> biv_state_glms_remote
+
+null_state2 <- null_glm_ll(dv = ~ cbind(comp_remote, remote), data = enve_state)
+
+biv_state_glms_remote_all <- do.call(rbind, biv_state_glms_remote)
+
+biv_state_glms_remote_all <- rbind(null_state2, biv_state_glms_remote_all)
+
+kable(biv_state_glms_remote_all, digits = 2, 
+      caption = "Response: cbind(comp_remote, remote)")
+
+
+lapply(statepredvars, function(z) tryCatch(multi_glm(data = enve_state, 
+                                       response = ~ cbind(comp_inperson, inperson),
+                                       predictor = z), 
+                                      error = function(e) NULL)) -> biv_state_glms_inperson
+
+
+null_state3 <- null_glm_ll(dv = ~ cbind(comp_inperson, inperson), data = enve_state)
+
+biv_state_glms_inperson_all <- do.call(rbind, biv_state_glms_inperson)
+
+biv_state_glms_inperson_all <- rbind(null_state3, biv_state_glms_inperson_all)
+
+kable(biv_state_glms_inperson_all, digits = 2, 
+      caption = "Response: cbind(comp_inperson, inperson)")
+
+
+
+```
+    
+    
+proportion compliance per state
+
+```{r state-compliance-per-state}
+
+enve_state %>%
+    transmute(ENTIDAD,
+           complied/extincs,
+           comp_inperson/inperson,
+           comp_remote/remote) %>%
+    kable(., digits = 3)
+
+```
+
+
+# Models
+
+First we'll try a single level logistic and see how post-hoc analyses work.
+
+As we have many missing values, will start with a saturated model and drop them sequentially, either by hand or through a function.
+
+
+First we start with the most restricted not excluding weapons, violence or offender variables.
+
+```{r subset-no-NA}
+
+## datasets with no NA values first.
+
+nacols <- colnames(enve_incvic)[colSums(is.na(enve_incvic)) > 0]
+
+nonacols <- names(enve_incvic)[!(names(enve_incvic) %in% nacols)]
+
+enve_incvic %>%
+    select(nonacols) -> enve_nona
+
+summary(enve_nona)
+nrow(enve_nona)
+nrow(enve_nona[complete.cases(enve_nona),])
+nrow(enve_nona[complete.cases(enve_incvic),])
+```
+
+```{r bivariate-models-all-variables}
+
+dvs <- c(~ extortion_type,
+         ~ extortion_type_bin,
+         ~ n_offenders_NA,
+         ~ rel_offenders_NA,
+         ~ had_weapon_NA,
+         ~ extortions,
+         ~ mylog(extortions),
+         ~ poly(extortons, 2),
+         ~ poly(mylog(extortons), 2),
+         ~ rep_extortion_victim,
+         ~ rep_extortions,
+         ~ log1p(rep_extortions),
+         ~ poly(rep_extortions, 2),
+         ~ bribes,
+         ~ log1p(bribes),
+         ~ poly(bribes, 2),
+         ~ poly(log1p(bribes),2),
+         ~ size, 
+         ~ subsector,
+         ~ years,
+         ~ log1p(years),
+         ~ poly(years, 2),
+         ~ poly(log1p(years), 2),
+         ~ yearsquant, 
+         ~ scale(N, scale = FALSE),
+         ~ mylog(N, center = TRUE),
+         ~ poly(N, 2),
+         ~ poly(mylog(N, center = FALSE), 2),
+         ~ scale(denuncias_homs, scale = FALSE),
+         ~ mylog(denuncias_homs, center = TRUE),
+         ~ poly(denuncias_homs, 2),
+         ~ poly(mylog(denuncias_homs, center = FALSE), 2),
+         ~ scale(poblacion, scale = FALSE),
+         ~ mylog(poblacion, center = TRUE),
+         ~ poly(poblacion, 2),
+         ~ poly(mylog(poblacion, center = FALSE), 2),
+         ~ scale(bribes_abvic, scale = FALSE),
+         ~ mylog(bribes_abvic, center = TRUE),
+         ~ poly(bribes_abvic, 2),
+         ~ poly(mylog(bribes_abvic, center = FALSE), 2),
+         ~ scale(defun, scale = FALSE),
+         ~ mylog(defun, center = TRUE),
+         ~ poly(defun, 2),
+         ~ poly(mylog(defun, center = FALSE), 2),
+         ~ scale(defun/defun_arma, scale = FALSE),
+         ~ mylog(defun/defun_arma, center = TRUE),
+         ~ poly(defun/defun_arma, 2),
+         ~ poly(mylog(defun/defun_arma, center = FALSE), 2),
+         ~ scale(ind_general, scale = FALSE),
+         ~ mylog(ind_general, center = TRUE),
+         ~ poly(ind_general, 2),
+         ~ poly(mylog(ind_general, center = FALSE), 2),
+         ~ scale(ind_derecho, scale = FALSE),
+         ~ mylog(ind_derecho, center = TRUE),
+         ~ poly(ind_derecho, 2),
+         ~ poly(mylog(ind_derecho, center = FALSE), 2),
+         ~ scale(drogas, scale = FALSE),
+         ~ mylog(drogas, center = TRUE),
+         ~ poly(drogas, 2),
+         ~ poly(mylog(drogas, center = FALSE), 2),
+         ~ scale(armas, scale = FALSE),
+         ~ mylog(armas, center = TRUE),
+         ~ poly(armas, 2),
+         ~ poly(mylog(armas, center = FALSE), 2),
+         ~ scale(do, scale = FALSE),
+         ~ mylog(do, center = TRUE),
+         ~ poly(do, 2),
+         ~ poly(mylog(do, center = FALSE), 2))
+
+lapply(dvs, function(z) tryCatch(multi_glm(data = enve_nona, 
+                                       response = ~ complied_bin_NA,
+                                       predictor = z), 
+                                      error = function(e) NULL)) -> biv_incvic_glms_compliance
+
+
+null_biv_incvic <- null_glm_ll(dv = ~ complied_bin_NA, data = enve_incvic)
+
+biv_incvic_glms_compliance_all <- do.call(rbind, biv_incvic_glms_compliance)
+
+biv_incvic_glms_compliance_all <- rbind(null_biv_incvic, biv_incvic_glms_compliance_all)
+
+kable(biv_incvic_glms_compliance_all, digits = 2, 
+      caption = "Response: complied_bin_NA")
+
+```
+
+First the canonical model with the state level variables identified in JQC manuscript, with years, then yearcounts
+
+
+```{r models-1}
+
+
+compliance_formula <- complied_bin_NA ~ extortion_type + 
+                                        n_offenders_NA + 
+                                        had_weapon_NA + 
+                                        mylog(extortions) +
+                                        mylog(bribes) + 
+                                        subsector + 
+                                        size + 
+                                        poly(years, 2) + 
+                                        mylog(bribes_abvic, TRUE) + 
+                                        mylog(armas, TRUE) +
+                                        mylog(drogas, TRUE) + 
+                                        mylog(poblacion, TRUE) + 
+                                        mylog(N, TRUE) + 
+                                        scale(General, scale = FALSE) + 
+                                        scale(Derecho, scale = FALSE)
+
+m1 <- glm(formula = compliance_formula, data = enve_nona, family = binomial())  
+
+tmbresults(m1)
+vif(m1, data = enve_nona)                 
+                                        
+m1tmb <- glmmTMB(formula = compliance_formula, data = enve_nona, family = binomial())  
+
+tmbresults(m1tmb)
+vif(m1tmb, data = enve_nona)
+
+dropalltest(m1tmb)
+
+```
+
+```{r models-2}
+## Testing years
+
+m2tmb <- update(m1tmb, . ~ . - poly(years, 2) + yearsquant)
+
+tmbresults(m2tmb)
+
+drop1(m2tmb, test = "Chisq", trace = TRUE, scope = "yearsquant")
+
+m3tmb <- update(m1tmb, . ~ . - poly(years, 2) + mylog(years))
+
+tmbresults(m3tmb)
+
+drop1(m3tmb, test = "Chisq", trace = TRUE, scope = "mylog(years)")
+
+
+
+
+```
+
+```{r models-two-level}
+
+# control for individual level
+
+mm1tmb <- update(m1tmb, . ~ . + (1|CVE_UNICA))
+
+tmbresults(mm1tmb)
+
+dropalltest(mm1tmbtmb)
+
+lrtest(mm1tmb, m1tmb)
+
+
+```
+
+```{r three-level-model}
+
+mmm1tmb <- update(mm1tmb, . ~ . + (1|NOM_ENT/CVE_UNICA) - (1|CVE_UNICA))
+
+tmbresults(mmm1tmb)
+
+dropalltest(mmm1tmb)
+
+lrtest(mmm1tmb, mm1tmb)
+
+
+```
+
+```{r using-lme4}
+
+#Option using lme4
+
+mm1lme4 <- glmer(update(compliance_formula, . ~ . + (1|CVE_UNICA)), family = "binomial", data = enve_nona)
+
+tmbresults(mm1lme4)
+
+lrtest(mm1lme4, m1)
+
+mmm1lme4 <- glmer(update(compliance_formula, . ~ . + (1|NOM_ENT/CVE_UNICA)), family = "binomial", data = enve_nona)
+
+tmbresults(mmm1lme4)
+
+lrtest(mmm1lme4, mm1lme4)
+
+
+```
+
+
+# Benchmark stats
+
+```{r timing, cache=FALSE}
+endtime <- proc.time()
+time <- endtime - starttime
+time
+
+print(paste("the script took", round(time[3]/60,2),
+              "minutes to run.", sep=" "))
+```
