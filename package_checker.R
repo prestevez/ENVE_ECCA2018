@@ -13,7 +13,8 @@ packages <- c("devtools",
               "foreign",
               "reshape2",
               "lmtest",
-              "car")
+              "car", 
+              "downloader")
 
 test <- packages %in% rownames(installed.packages())
 

@@ -80,6 +80,7 @@ library(Cairo)
 library(glmmTMB)
 library(victim)
 library(tidyverse)
+library(downloader)
 
 read.dbf <- foreign::read.dbf
 getURL <- RCurl::getURL
@@ -87,6 +88,7 @@ kable <- knitr::kable
 melt <- reshape2::melt
 lrtest <- lmtest::lrtest
 select <- dplyr::select
+getURL <- RCurl::getURL
 
 
 sessionInfo()
@@ -107,6 +109,7 @@ required packages thus far:
 - `car`
 - `devtools`
 - `Cairo`
+- `downloader`
 
 ```{r functions}
 
@@ -233,13 +236,12 @@ We first load and arrange the area and victim level data
 ### Change if not in testing settings
 testing <- TRUE
 
-
 if(testing == TRUE)
 {
-    download.file("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014cuest_ciega_2014.dbf",
-                  destfile = "enve2014cuest_ciega_2014.dbf", method = "curl")
-    download.file("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014delitos_ciega_2014.dbf",
-                  destfile = "enve2014delitos_ciega_2014.dbf", method = "curl")
+    download("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014cuest_ciega_2014.dbf",
+                  destfile = "enve2014cuest_ciega_2014.dbf")
+    download("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014delitos_ciega_2014.dbf",
+             destfile = "enve2014delitos_ciega_2014.dbf")
 
 }
 
