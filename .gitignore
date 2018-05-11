@@ -8,3 +8,5 @@ ECCA2018_extortion_report_files/
 tests/
 *.RData
 *.Rhistory
+cache/
+
