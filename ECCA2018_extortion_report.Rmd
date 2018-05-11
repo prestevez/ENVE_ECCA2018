@@ -1594,6 +1594,19 @@ lrtest(mmm1lme4, mm1lme4)
 
 ```
 
+# Save all to an Rdata file for future analyses
+
+```{r save-all}
+
+nowtime <- Sys.time()
+print(nowtime)
+
+filename <- paste0("Estevez_ENVE_Compliance_", nowtime, ".RData")
+filename
+save.image(file = filename)
+
+```
+
 
 # Benchmark stats
 
