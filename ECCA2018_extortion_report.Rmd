@@ -1625,7 +1625,7 @@ exclude Weapon
 ```{r restricted-models-exclude-weapon}
 
 m1tmb_res1 <- update(m1tmb, . ~ . - had_weapon_NA)
-tmbresults(mm1tmb_res1)
+tmbresults(m1tmb_res1)
 
 mm1tmb_res1 <- update(mm1tmb, . ~ . - had_weapon_NA)
 tmbresults(mm1tmb_res1)
@@ -1645,7 +1645,7 @@ using a different version of extortion type
 ```{r restricted-model-2}
 
 m1tmb_res2 <- update(m1tmb, . ~ . - extortion_type + extortion_type_bin)
-tmbresults(mm1tmb_res2)
+tmbresults(m1tmb_res2)
 
 mm1tmb_res2 <- update(mm1tmb, . ~ . - extortion_type + extortion_type_bin)
 tmbresults(mm1tmb_res2)
@@ -1673,7 +1673,7 @@ lrtest(m1tmb_res2_step, mm1tmb_res2_step, mmm1tmb_res2_step)
 # exclude weapons
 
 m1tmb_res3 <- update(m1tmb, . ~ . - extortion_type + extortion_type_bin - had_weapon_NA)
-tmbresults(mm1tmb_res3)
+tmbresults(m1tmb_res3)
 
 mm1tmb_res3 <- update(mm1tmb, . ~ . - extortion_type + extortion_type_bin - had_weapon_NA)
 tmbresults(mm1tmb_res3)
@@ -1758,6 +1758,9 @@ lrtest(indm1_step, indmm1_report_rate_step)
 
 
 ```
+
+## Compliance as counts
+
 
 ```{r compliance-as-counts}
 
