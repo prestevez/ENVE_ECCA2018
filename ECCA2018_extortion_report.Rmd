@@ -209,13 +209,16 @@ tmbresults <- function(tmbmodel)
     print("Confidence Intervals (Odd Ratio)")
     print(exp(confint(tmbmodel)))
     print(lmtest::lrtest(tmbmodel))
+    print("Variance-Covariance Matrix")
+    print(vcov(tmbmodel))
+    
 }
 
 dropalltest <- function(mod)
 {
     dropped <- drop1(mod, test = "Chisq", trace = TRUE)
     print(dropped)
-    print(kable(dropped))
+    print(kable(cbind(dr, sig = add_stars(dropped$`Pr(>Chi)`))))
 }
 
 
@@ -514,8 +517,7 @@ ivs <- c("extortion_type",
 
 biv_inc_rels_noNA <- batch_chisq(df = enve_incvic, DV = "complied_bin_NA", IV = ivs)
 
-kable(chisq_tb(biv_inc_rels_noNA, stars = TRUE), "pandoc",
-      caption = "Chi-square tests between 'complied_bin_NA' and a set of DV")
+chisq_tb(biv_inc_rels_noNA, stars = TRUE)
 
 print_kables(chisq_list(biv_inc_rels_noNA, option = "observed", print_option = "pandoc"))
 
@@ -538,8 +540,7 @@ ivs <- c("extortion_type",
 
 biv_inc_rels <- batch_chisq(df = enve_incvic, DV = "complied_bin", IV = ivs)
 
-kable(chisq_tb(biv_inc_rels, stars = TRUE), "pandoc",
-      caption = "Chi-square tests between 'complied_bin' and a set of DV")
+chisq_tb(biv_inc_rels, stars = TRUE)
 
 print_kables(chisq_list(biv_inc_rels, option = "observed", print_option = "pandoc"))
 
@@ -561,8 +562,7 @@ ivs <- c("extortion_type",
 
 biv_inc_rels <- batch_chisq(df = enve_incvic, DV = "complied_bin_NA", IV = ivs)
 
-kable(chisq_tb(biv_inc_rels, stars = TRUE), "pandoc",
-      caption = "Chi-square tests between 'complied_bin_NA' and a set of DV")
+chisq_tb(biv_inc_rels, stars = TRUE)
 
 print_kables(chisq_list(biv_inc_rels, option = "observed", print_option = "pandoc"))
 
@@ -608,11 +608,9 @@ inc_cross_IV_NA <- lapply(ivs, function(x) batch_chisq(df = enve_incvic, DV = x,
 
 inc_cross_IV_NA
 
-kable(chisq_tb(biv_inc_rels_noNA, stars = TRUE), "pandoc",
-      caption = "Chi-square tests between 'complied_bin_NA' and a set of DV")
+chisq_tb(biv_inc_rels_noNA, stars = TRUE)
 
-lapply(inc_cross_IV_NA, function(x) kable(chisq_tb(x, stars = TRUE), "pandoc",
-                                          caption = "Chi-square tests between DVs"))
+lapply(inc_cross_IV_NA, function(x) chisq_tb(x, stars = TRUE))
 
 
 ```
@@ -1369,7 +1367,8 @@ enve_state %>%
     transmute(ENTIDAD,
            complied/extincs,
            comp_inperson/inperson,
-           comp_remote/remote) %>%
+           comp_remote/remote,
+           extincs) %>%
     kable(., digits = 3)
 
 ```
@@ -1399,7 +1398,41 @@ summary(enve_nona)
 nrow(enve_nona)
 nrow(enve_nona[complete.cases(enve_nona),])
 nrow(enve_nona[complete.cases(enve_incvic),])
+
+## Data structure
+
+"number of incidents"
+nrow(enve_nona)
+
+"incidents per business"
+table(table(enve_nona$CVE_UNICA))
+enve_nona %>%
+    count(CVE_UNICA) %>%
+    summarise(min(n),
+              max(n),
+              mean(n),
+              n())
+
+"number of incidents per state"
+enve_nona %>%
+    count(CVE_ENT) %>%
+    summarise(min(n),
+              mean(n),
+              max(n),
+              n())
+
+"number of businesses per state"
+enve_nona %>%
+    count(CVE_ENT, CVE_UNICA) %>%
+    count(CVE_ENT) %>%
+    summarise(min(nn),
+              mean(nn),
+              max(nn))
+
 ```
+
+No do the models, first bivariate
+
 
 ```{r bivariate-models-all-variables}
 
@@ -1555,20 +1588,251 @@ tmbresults(mm1tmb)
 
 dropalltest(mm1tmbtmb)
 
-lrtest(mm1tmb, m1tmb)
+lrtest(m1tmb, mm1tmb)
 
 
 ```
 
 ```{r three-level-model}
 
-mmm1tmb <- update(mm1tmb, . ~ . + (1|NOM_ENT/CVE_UNICA) - (1|CVE_UNICA))
+mmm1tmb <- update(mm1tmb, . ~ . + (1|CVE_ENT/CVE_UNICA) - (1|CVE_UNICA))
 
 tmbresults(mmm1tmb)
 
 dropalltest(mmm1tmb)
 
-lrtest(mmm1tmb, mm1tmb)
+lrtest(mm1tmb,mmm1tmb)
+
+lrtest(m1tmb,mm1tmb,mmm1tmb)
+
+
+m1_null <- update(m1tmb, . ~ 1)
+mm1_null <- update(m1tmb, . ~ 1 + (1|CVE_UNICA))
+mmm1_null <- update(m1tmb, . ~ 1 + (1|CVE_ENT/CVE_UNICA))
+
+summary(m1_null)
+summary(mm1_null)
+summary(mmm1_null)
+
+lrtest(m1_null, mm1_null, mm1_null)
+
+```
+
+## Restricted models
+
+exclude Weapon
+
+```{r restricted-models-exclude-weapon}
+
+m1tmb_res1 <- update(m1tmb, . ~ . - had_weapon_NA)
+tmbresults(mm1tmb_res1)
+
+mm1tmb_res1 <- update(mm1tmb, . ~ . - had_weapon_NA)
+tmbresults(mm1tmb_res1)
+
+mmm1tmb_res1 <- update(mmm1tmb, . ~ . - had_weapon_NA)
+tmbresults(mmm1tmb_res1)
+
+lrtest(m1tmb_res1, mm1tmb_res1, mmm1tmb_res1)
+
+
+
+```
+
+
+using a different version of extortion type
+
+```{r restricted-model-2}
+
+m1tmb_res2 <- update(m1tmb, . ~ . - extortion_type + extortion_type_bin)
+tmbresults(mm1tmb_res2)
+
+mm1tmb_res2 <- update(mm1tmb, . ~ . - extortion_type + extortion_type_bin)
+tmbresults(mm1tmb_res2)
+
+mmm1tmb_res2 <- update(mmm1tmb, . ~ . - extortion_type + extortion_type_bin)
+tmbresults(mmm1tmb_res2)
+
+lrtest(m1tmb_res2, mm1tmb_res2, mmm1tmb_res2)
+
+m1tmb_res2_step <- step(m1tmb_res2)
+tmbresults(m1tmb_res2_step)
+
+lrtest(m1tmb_res2, m1tmb_res2_step)
+
+mm1tmb_res2_step <- update(m1tmb_res2_step, . ~ . + (1|CVE_UNICA))
+tmbresults(mm1tmb_res2_step)
+lrtest(m1tmb_res2_step, mm1tmb_res2_step)
+
+mmm1tmb_res2_step <- update(m1tmb_res2_step, . ~ . + (1|CVE_ENT/CVE_UNICA))
+tmbresults(mmm1tmb_res2_step)
+lrtest(m1tmb_res2_step, mm1tmb_res2_step, mmm1tmb_res2_step)
+
+
+
+# exclude weapons
+
+m1tmb_res3 <- update(m1tmb, . ~ . - extortion_type + extortion_type_bin - had_weapon_NA)
+tmbresults(mm1tmb_res3)
+
+mm1tmb_res3 <- update(mm1tmb, . ~ . - extortion_type + extortion_type_bin - had_weapon_NA)
+tmbresults(mm1tmb_res3)
+
+mmm1tmb_res3 <- update(mmm1tmb, . ~ . - extortion_type + extortion_type_bin - had_weapon_NA)
+tmbresults(mmm1tmb_res3)
+
+lrtest(m1tmb_res3, mm1tmb_res3, mmm1tmb_res3)
+
+
+```
+
+## Automatic model selection
+
+```{r auto-sel}
+
+m1tmb_step <- step(m1tmb)
+tmbresults(m1tmb_step)
+
+lrtest(m1tmb, m1tmb_step)
+
+mm1tmb_step <- update(m1tmb_step, . ~ . + (1|CVE_UNICA))
+tmbresults(mm1tmb_step)
+lrtest(m1tmb_step, mm1tmb_step)
+
+mmm1tmb_step <- update(m1tmb_step, . ~ . + (1|CVE_ENT/CVE_UNICA))
+tmbresults(mmm1tmb_step)
+lrtest(m1tmb_step, mm1tmb_step, mmm1tmb_step)
+
+
+```
+
+
+## Models for aggregate individual proportion
+
+Repeat the models but use proportion of compliace aggregated at the individual level
+
+```{r individual-level-models}
+
+ind_form <- cbind(complied, extincs) ~ inperson + mylog(extortions) + mylog(bribes) + subsector + size + 
+    poly(years, 2) + mylog(bribes_abvic, TRUE) + mylog(armas, TRUE) + mylog(drogas, TRUE) + mylog(poblacion, TRUE) +
+    mylog(N, TRUE) + scale(General, scale = FALSE) + scale(Derecho, scale = FALSE)
+
+indm1 <- glmmTMB(ind_form, data = enve_bus, family = "binomial")    
+tmbresults(indm1)
+
+indmm1 <- update(indm1, . ~ . + (1|CVE_ENT))
+tmbresults(indmm1)
+lrtest(indm1, indmm1)
+
+
+indm1_step <- step(indm1)
+tmbresults(indm1_step)
+lrtest(indm1, indm1_step)
+
+indmm1_step <- update(indm1_step, . ~ . + (1|CVE_ENT))
+tmbresults(indmm1_step)
+lrtest(indm1_step, indmm1_step)
+```
+
+
+```{r individual-level-models-rateIV}
+
+indm1_report_rate <- update(indm1, . ~ . - inperson + I(inperson/extincs))
+
+tmbresults(indm1_report_rate)
+
+indmm1_report_rate <- update(indm1_report_rate, . ~ . + (1|CVE_ENT))
+tmbresults(indmm1_report_rate)
+lrtest(indm1_report_rate, indmm1_report_rate)
+
+
+indm1_report_rate_step <- step(indm1_report_rate)
+tmbresults(indm1_report_rate_step)
+lrtest(indm1_report_rate, indm1_report_rate_step)
+
+indmm1_report_rate_step <- update(indm1_report_rate_step, . ~ . + (1|CVE_ENT))
+tmbresults(indmm1_report_rate_step)
+lrtest(indm1_step, indmm1_report_rate_step)
+
+
+
+    
+```
+
+```{r compliance-as-counts}
+
+
+ind_count_form <- complied ~ inperson + offset(log(extincs)) + mylog(bribes) + subsector + size + 
+    poly(years, 2) + mylog(bribes_abvic, TRUE) + mylog(armas, TRUE) + mylog(drogas, TRUE) + mylog(poblacion, TRUE) +
+    mylog(N, TRUE) + scale(General, scale = FALSE) + scale(Derecho, scale = FALSE)
+
+indcont1_poiss <- glmmTMB(ind_count_form, data = enve_bus, family = "poisson")    
+tmbresults(indcont1_poiss)
+
+indcont1_nb <- glmmTMB(ind_count_form, data = enve_bus, family = "nbinom2")    
+tmbresults(indcont1_nb)
+
+nbpo <- lrtest(indcont1_poiss, indcont1_nb)
+
+if(nbpo$`Pr(>Chisq)`[2] < 0.05)
+{
+    print("use NB")
+    fav_countmod <- indcont1_nb
+}else 
+{
+    print("use Poisson")
+    fav_countmod <- indcont1_poiss
+}
+
+count_mm <- update(fav_countmod, . ~ . + (1|CVE_ENT))
+tmbresults(fav_countmod)
+lrtest(fav_countmod, count_mm)
+
+
+countmod_step <- step(fav_countmod)
+tmbresults(countmod_step)
+lrtest(fav_countmod, countmod_step)
+
+countmod_step_mm <- update(countmod_step, . ~ . + (1|CVE_ENT))
+tmbresults(countmod_step_mm)
+lrtest(countmod_step, countmod_step_mm)
+```
+
+```{r zero-inflation-and-hurdle}
+#Test zero inflation and hurdle models
+
+zi_poiss <- glmmTMB(ind_count_form, data = enve_bus, family = "poisson",
+                    zi = ~ inperson )    
+tmbresults(zi_poiss)
+
+hurdle_poiss <- glmmTMB(ind_count_form, data = enve_bus, family = "truncated_poisson",
+                    zi = ~ inperson )    
+tmbresults(hurdle_poiss)
+
+## simplest models
+
+count_form <-  complied ~ inperson + offset(log(extincs))
+
+zi_poiss_simple <- glmmTMB(count_form, 
+                    zi = ~ inperson, 
+                    data = enve_bus,
+                    family = poisson)   
+
+tmbresults(zi_poiss_simple)
+
+#### Now the hurdle ####
+
+hurdle_poiss_simple <- glmmTMB(count_form, 
+                    zi = ~ inperson, 
+                    data = enve_bus,
+                    family = truncated_poisson)    
+tmbresults(hurdle_poiss_simple)
+
+
+
+
+```
+
 
 
 ```
