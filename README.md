@@ -22,7 +22,6 @@ Los paquetes requeridos por este proyecto son los siguientes:
 - `lmtest`
 - `lazyeval`
 - `car`
-- `lme4`
 - `devtools`
 - `Cairo`
 
@@ -60,7 +59,6 @@ instal.packages("foreign")
 instal.packages("tidyverse")
 instal.packages("Cairo")
 instal.packages("knitr")
-instal.packages("lme4")
 instal.packages("lazyeval")
 instal.packages("RCurl")
 instal.packages("glmmTMB")

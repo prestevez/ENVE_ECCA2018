@@ -80,7 +80,6 @@ library(Cairo)
 library(glmmTMB)
 library(victim)
 library(tidyverse)
-library(lme4)
 
 read.dbf <- foreign::read.dbf
 getURL <- RCurl::getURL
@@ -106,7 +105,6 @@ required packages thus far:
 - `lmtest`
 - `lazyeval`
 - `car`
-- `lme4`
 - `devtools`
 - `Cairo`
 
@@ -553,7 +551,7 @@ print_kables(chisq_list(biv_inc_rels, option = "percent", print_option = "pandoc
 
 Repeat considering NAs except for compliance
 
-```{r bivariate-incident}
+```{r bivariate-incident-other}
 
 ivs <- c("extortion_type",
          "extortion_type_bin",
@@ -1575,24 +1573,6 @@ lrtest(mmm1tmb, mm1tmb)
 
 ```
 
-```{r using-lme4}
-
-#Option using lme4
-
-mm1lme4 <- glmer(update(compliance_formula, . ~ . + (1|CVE_UNICA)), family = "binomial", data = enve_nona)
-
-tmbresults(mm1lme4)
-
-lrtest(mm1lme4, m1)
-
-mmm1lme4 <- glmer(update(compliance_formula, . ~ . + (1|NOM_ENT/CVE_UNICA)), family = "binomial", data = enve_nona)
-
-tmbresults(mmm1lme4)
-
-lrtest(mmm1lme4, mm1lme4)
-
-
-```
 
 # Save all to an Rdata file for future analyses
 

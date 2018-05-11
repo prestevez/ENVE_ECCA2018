@@ -3,3 +3,7 @@
 *.csv
 .Rproj.user/
 .Rproj.user
+ECCA2018_extortion_report_cache/
+ECCA2018_extortion_report_files/
+tests/
+*.RData
