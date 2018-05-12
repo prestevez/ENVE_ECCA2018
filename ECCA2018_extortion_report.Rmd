@@ -1588,7 +1588,7 @@ mm1tmb <- update(m1tmb, . ~ . + (1|CVE_UNICA))
 
 tmbresults(mm1tmb)
 
-dropalltest(mm1tmbtmb)
+dropalltest(mm1tmb)
 
 lrtest(m1tmb, mm1tmb)
 
