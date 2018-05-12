@@ -239,9 +239,9 @@ testing <- TRUE
 if(testing == TRUE)
 {
     download("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014cuest_ciega_2014.dbf",
-                  destfile = "enve2014cuest_ciega_2014.dbf")
+                  destfile = "enve2014cuest_ciega_2014.dbf", mode = "wb")
     download("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014delitos_ciega_2014.dbf",
-             destfile = "enve2014delitos_ciega_2014.dbf")
+             destfile = "enve2014delitos_ciega_2014.dbf", mode = "wb")
 
 }
 
