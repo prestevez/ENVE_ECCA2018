@@ -24,6 +24,7 @@ Los paquetes requeridos por este proyecto son los siguientes:
 - `car`
 - `devtools`
 - `Cairo`
+- `downloader`
 
 **Es recomendable contar con la [versión más actualizada de R](https://cran.r-project.org).**
 
