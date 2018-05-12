@@ -9,4 +9,4 @@ tests/
 *.RData
 *.Rhistory
 cache/
-
+releases/
