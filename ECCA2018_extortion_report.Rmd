@@ -234,7 +234,7 @@ We first load and arrange the area and victim level data
 ```{r test-setting}
 
 ### Change if not in testing settings
-testing <- TRUE
+testing <- FALSE
 
 if(testing == TRUE)
 {

@@ -1,7 +1,6 @@
 # Package checker script
 
 packages <- c("devtools",
-              "victim",
               "foreign",
               "tidyverse",
               "Cairo",

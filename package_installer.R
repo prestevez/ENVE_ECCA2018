@@ -8,12 +8,6 @@ if(!is.null(not))
                "\nInstalling... ", not, "\n"))
 
 
-    if("victim" %in% not)
-    {
-        install_victim <- TRUE
-        not <- not[not != "victim"]
-    } else {install_victim <- FALSE}
-
     ## Install all available on CRAN
 
     install.packages(not, repos = "https://cloud.r-project.org/")
@@ -21,13 +15,11 @@ if(!is.null(not))
 
     # Next, install custom package "victim" from github in not installed
 
-    if(isTRUE(install_victim))
-    {
-     devtools::install_github("prestevez/victim")
-    }
-
-    # All packages should now be installed
-
-    source("package_checker.R")
-
 }
+
+# Install victim package to ensure latest version
+devtools::install_github("prestevez/victim")
+
+# All packages should now be installed
+
+source("package_checker.R")
