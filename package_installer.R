@@ -19,8 +19,12 @@ if(!is.null(not))
 
 if(!"victim" %in% rownames(installed.packages()))
 {
+    install.packages("rlang")
     # Install victim package to ensure latest version
     devtools::install_github("prestevez/victim")
+} else
+{
+    cat("Github source package: victim, also installed")
 }
 
 
