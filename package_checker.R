@@ -7,13 +7,14 @@ packages <- c("devtools",
               "knitr",
               "lazyeval",
               "RCurl",
-              "glmmTMB",
+              #"glmmTMB",
               "classInt",
               "foreign",
               "reshape2",
               "lmtest",
-              "car", 
-              "downloader")
+              "car",
+              "downloader",
+              "sandwich")
 
 test <- packages %in% rownames(installed.packages())
 
