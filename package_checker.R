@@ -20,11 +20,11 @@ test <- packages %in% rownames(installed.packages())
 
 if(all(test))
 {
-    cat("All required packages are installed.\n")
+    cat("All required CRAN packages are installed.\n")
     not <- NULL
 } else
 {
     not <- packages[which(test == FALSE)]
-    cat(paste0("Packages not installed: ", not,
+    cat(paste0("CRAN packages not installed: ", not,
                ". \nPlease install them manually.\n"))
 }

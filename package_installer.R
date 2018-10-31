@@ -4,7 +4,7 @@ source("package_checker.R")
 
 if(!is.null(not))
 {
-    cat(paste0("Packages not installed: ", not,
+    cat(paste0("CRAN packages not installed: ", not,
                "\nInstalling... ", not, "\n"))
 
 
@@ -17,8 +17,13 @@ if(!is.null(not))
 
 }
 
-# Install victim package to ensure latest version
-devtools::install_github("prestevez/victim")
+if(!"victim" %in% rownames(installed.packages()))
+{
+    # Install victim package to ensure latest version
+    devtools::install_github("prestevez/victim")
+}
+
+
 
 # All packages should now be installed
 
