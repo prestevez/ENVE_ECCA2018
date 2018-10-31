@@ -10,3 +10,7 @@ tests/
 *.Rhistory
 cache/
 releases/
+cluster_logit.do
+drafts/
+enve_nona.dta
+results/

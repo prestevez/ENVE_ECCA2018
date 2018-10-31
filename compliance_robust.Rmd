@@ -1,0 +1,978 @@
+---
+title: "Extortion in Mexico: Who pays and why?"
+author: "Patricio R. Estevez Soto"
+email: "patricio.estevez.14@ucl.ac.uk"
+date: "05/05/2018"
+output:
+  md_document:
+    variant: "markdown"
+pandoc_args: "--smart"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      comment="",
+                      cache=TRUE,
+                      dev=c("png", "CairoPDF"),
+                      error=TRUE)
+options(knitr.kable.NA = '---')
+```
+
+# Introduction
+
+This document contains the script and results for a research project on extortion against businesses in Mexico.
+
+Previous research has found that extortion against businesses is acutely concentrated on a few businesses who experience more than half of all extortion incidents in the country as repeat extortion victimizations. That project found that the rate at which businesses suffer extortion is mostly determined by their characteristics---such as their age, whether they are a restaurant, the number of corruption incidents they have suffered, and their size---and to a lesser extent, to the characteristics of the state where they are located---which include the state homicide rate and other unmeasured between-state differences.
+
+Nonetheless, that research did not consider that most extortion victims do not comply with extortion demands. Thus this project aims to explore the distribution of successful extortion incidents, and identify the incident, victim and area characteristics associated with a higher likelihood of complying with extortion.
+
+The incident-level characteristics that will be explored are:
+
+- month
+- time of day
+- number of offenders
+- victim's relationship to the offender
+- use of a weapon
+- type of weapon
+- use of violence
+- whether the incident was reported to the authorities (MP + other)
+- type of extortion
+- what was requested
+- retaliation against business for not complying
+- whether the victim complied with the extortion
+
+The victim-level characteristics are:
+- business type
+- business age
+- business size
+- Victim of corruption
+- number of corruption victimizations, repeat corruption victim
+- number of extortion victimizations
+- repeat extortion victim
+
+Area-level characteristics:
+- State
+- State homicides
+- State population (control)
+Add more stuff here
+
+# Set up, data input and pre-process
+
+## Session info
+
+We first check details of the session and system, and for reproducibility, we set the random seed.
+
+```{r session, cache=FALSE}
+starttime <- proc.time()
+date()
+sessionInfo()
+set.seed(42)
+options(scipen=0)
+```
+
+## Load packages and functions
+
+Next we load the packages that we will use.
+
+```{r packages}
+
+library(Cairo)
+#library(glmmTMB)
+library(victim)
+library(tidyverse)
+library(downloader)
+library(sandwich)
+library(lmtest)
+
+read.dbf <- foreign::read.dbf
+getURL <- RCurl::getURL
+kable <- knitr::kable
+melt <- reshape2::melt
+select <- dplyr::select
+getURL <- RCurl::getURL
+
+
+sessionInfo()
+
+```
+
+required packages thus far:
+
+- `foreign`
+- `classInt`
+- `tidyverse`
+- `glmmTMB`
+- `RCurl`
+- `victim`
+- `knitr`
+- `lmtest`
+- `lazyeval`
+- `car`
+- `devtools`
+- `Cairo`
+- `downloader`
+
+
+
+Load custom functions
+
+```{r functions}
+
+mylog <- function(x, center = FALSE)
+{
+    if(min(x) <= 0) {tlog <- log1p}
+    else {tlog <- log}
+
+    logx <- tlog(x)
+
+    if(isTRUE(center))
+    {
+        logx <- logx - tlog(mean(x))
+    }
+
+    return(logx)
+
+}
+
+multi_glm <- function(data, response, predictor, family = binomial(), ...)
+{
+    # Function that fits a glm and returns:
+    # slope, slope p value, loglik, LR Test p value,
+
+    glm_form <- y ~ x
+    lazyeval::f_lhs(glm_form) <- lazyeval::uq(response)
+    lazyeval::f_rhs(glm_form) <- lazyeval::uq(predictor)
+
+    mod <- glm(formula = glm_form, data = data, family = family, ...)
+
+    # Gather results into a data frame
+    out = data.frame(slope = coef(mod)[2:length(coef(mod))],
+                     pval = summary(mod)$coefficients[2:length(coef(mod)),4])
+
+    out$s1 <- victim::add_stars(out$pval)
+
+    out2 <- data.frame(ll = logLik(mod)[1],
+                      LRTpval = anova(mod, test = "LRT")[2,5])
+    out2$s2 <- victim::add_stars(out2$LRTpval)
+
+    out[1,4] <- out2$ll
+    out[1,5] <- out2$LRTpval
+    out[1,6] <- out2$s2
+    names(out)[4:6] <- names(out2)
+    # out <- cbind(out,out2)
+
+    return(out)
+}
+
+vif <- function(form, data, family = "binomial")
+{
+    if(!is_formula(form)) {form <- formula(form)}
+
+    lmmod <- glm(form, data = data,  family = family)
+
+    vifs <- car::vif(lmmod)
+
+    return(vifs)
+}
+
+null_glm_ll <- function(dv, data, family = binomial(), ...)
+{
+    glm_form <- y ~ 1
+    lazyeval::f_lhs(glm_form) <- lazyeval::uq(dv)
+
+    model <-  glm(formula = glm_form, data = data, family = family, ...)
+
+    out <- data.frame(slope = NA,
+                      pval = NA,
+                      s1 = NA,
+                      ll= logLik(model),
+                      LRTpval = NA,
+                      s2 = NA)
+    rownames(out) <- "Null"
+    return(out)
+}
+
+
+propfun <- function(dv, w, iv, dat)
+{
+    dat %>%
+        group_by_(iv) %>%
+        summarise_(lazyeval::interp(~ sum(x), x = as.name(dv)),
+                   lazyeval::interp(~ sum(x), x = as.name(w))) -> dat2
+
+    dat2 <- data.frame(dat2)
+
+    pt <- prop.test(dat2[,2], dat2[,3])
+
+    names(pt$estimate) <- dat2[,iv]
+    pt$data.name <- paste0(dv, " out of ", w)
+    return(pt)
+}
+
+tmbresults <- function(tmbmodel)
+{
+    print(summary(tmbmodel))
+    print("Confidence Intervals (Log-odds)")
+    print(confint(tmbmodel))
+    # print("Confidence Intervals (Odd Ratio)")
+    # print(exp(confint(tmbmodel)))
+    print(lmtest::waldtest(tmbmodel, test = "Chisq"))
+    #print("Variance-Covariance Matrix")
+    #print(vcov(tmbmodel))
+
+}
+
+dropalltest <- function(mod)
+{
+    dropped <- drop1(mod, test = "Chisq", trace = TRUE)
+    print(dropped)
+    print(kable(cbind(dropped, sig = add_stars(dropped$`Pr(>Chi)`))))
+}
+
+
+deff_cl <- function(mod, rob_mod) diag(mod$var)/diag(rob_mod$var)
+
+
+summaryCL <- function(m, clusterid, conf.level = 0.95, boots = FALSE, R = 400, ...)
+{
+    if(isFALSE(boots))
+    {
+        robust_vcov <- sandwich::vcovCL(m, cluster = clusterid)
+    } else
+    {
+        robust_vcov <- sandwich::vcovBS(m, cluster = clusterid, R, ...)
+    }
+    
+    
+    rob_coef <- lmtest::coeftest(m, vcov. = robust_vcov)
+    rob_confint <- lmtest::coefci(m, level = conf.level, vcov. = robust_vcov)
+    
+    results <- cbind(rob_coef, rob_confint)
+    results <- data.frame(results)
+    
+    names(results) <- c("estimate", "SE", "z.value", "p.value", "ci.low", "ci.high")
+    
+    results$sig <- victim::add_stars(results[,4])
+    
+    waldt <- lmtest::waldtest(m, vcov = robust_vcov, test = "Chisq")
+    
+    results_list <- list(coefs = results, clusterid = clusterid, wald = waldt, vcov = robust_vcov)
+    
+    class(results_list) <- "summaryCL"
+    
+    return(results_list)
+    
+}
+
+
+print.summaryCL <- function(summaryCL.object) 
+{
+    print(summaryCL.object[-4])
+}
+
+vcov.summaryCL <- function(summaryCL.object)
+{
+    summaryCL.object$vcov
+}
+
+
+```
+
+## Load data
+
+We first load and arrange the area and victim level data
+
+```{r test-setting}
+
+### Change if not in testing settings
+testing <- TRUE
+
+if(testing == TRUE)
+{
+    download("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014cuest_ciega_2014.dbf",
+                  destfile = "enve2014cuest_ciega_2014.dbf", mode = "wb")
+    download("https://raw.githubusercontent.com/prestevez/datahouse/master/enve2014delitos_ciega_2014.dbf",
+             destfile = "enve2014delitos_ciega_2014.dbf", mode = "wb")
+
+}
+
+list.files()
+
+```
+
+
+```{r victim-level}
+enve_all <- read.dbf("enve2014cuest_ciega_2014.dbf")
+
+cat_entidades <- read.csv(text = getURL("https://raw.githubusercontent.com/prestevez/datahouse/master/cat_entidades.csv"), head=TRUE)
+state_level_data <- read.csv(text = getURL("https://raw.githubusercontent.com/prestevez/datahouse/master/state_level_data_2013.csv"), header=TRUE)
+state_level_data <- merge(state_level_data,
+                          cat_entidades, by="CVE_ENT", all.x=TRUE)
+scode <- read.csv(text = getURL("https://raw.githubusercontent.com/prestevez/datahouse/master/secode.csv"), head=TRUE)
+scode$Code <- scode$Code*10000
+
+# Prepare data for analysis
+# Selecting only the relevant variables
+
+enve_test <- data.frame(extortions=as.integer(as.character(enve_all$P26_10)))
+
+enve_test$extortion_victim <- enve_all$P25_10
+enve_test$extortions[enve_test$extortion_victim == 2] <- 0
+summary(enve_test$extortions)
+table(enve_test$extortions)
+
+enve_test$extortions[is.na(enve_test$extortions)] <- 0
+
+summary(enve_test$extortions)
+table(enve_test$extortions)
+
+enve_test$rep_extortion_victim <- factor(enve_test$extortions)
+levels(enve_test$rep_extortion_victim) <- c(0, 0,
+                    rep(1, length(levels(enve_test$rep_extortion_victim)) - 2))
+
+summary(enve_test$rep_extortion_victim)
+
+enve_test$rep_extortions <- enve_test$extortions
+enve_test$rep_extortions[enve_test$rep_extortions > 0] <- enve_test$rep_extortions[enve_test$rep_extortions > 0] - 1
+
+summary(enve_test$rep_extortions)
+table(enve_test$rep_extortions)
+
+
+enve_test$CVE_UNICA <- as.integer(as.character(enve_all$ID_CONSECU))
+
+enve_test$bribes <- as.integer(as.character(enve_all$P33))
+summary(enve_test$bribes)
+
+# 4 bribe cats
+enve_test$bribe1 <- enve_all$P29_1
+enve_test$bribe2 <- enve_all$P30_1
+enve_test$bribe3 <- enve_all$P31_1
+enve_test$bribe4 <- enve_all$P32_1
+
+enve_test$bribes[with(enve_test,
+                        bribe1 == 2 &
+                        bribe2 == 2 &
+                        bribe3 == 2 &
+                        bribe4 == 2)] <- 0
+
+summary(enve_test$bribes)
+
+enve_test$bribes[is.na(enve_test$bribes)] <- 0
+
+enve_test$bribe_victim <- factor(enve_test$bribes)
+levels(enve_test$bribe_victim) <- c(0,
+                                    rep(1, length(levels(enve_test$bribe_victim)) - 1))
+summary(enve_test$bribe_victim)
+
+enve_test$rep_bribe <- factor(enve_test$bribes)
+levels(enve_test$rep_bribe) <- c(0, 0, rep(1,
+                                           length(levels(enve_test$rep_bribe)) - 2))
+summary(enve_test$rep_bribe)
+
+enve_test$bribe_cats <- factor(enve_test$bribes)
+levels(enve_test$bribe_cats) <- c(0, 1, 2, rep("3+",
+                                            length(levels(enve_test$bribe_cats)) - 3))
+summary(enve_test$bribe_cats)
+
+enve_test$CVE_ENT <- as.integer(as.character(enve_all$CVE_ENT))
+
+enve_test$size <- enve_all$ID_ESTRATO
+levels(enve_test$size) <- c("Large", "Medium", "Small", "Micro")
+
+enve_test$sector <- enve_all$SECTOR_FIN
+
+# subsector
+enve_test$tempsub <- as.integer(as.character(enve_all$P1_1B))
+enve_test$subsector <- cut(enve_test$tempsub, scode$Code, right=FALSE)
+levels(enve_test$subsector) <- scode$Sector
+enve_test$subsector <- droplevels(enve_test$subsector)
+enve_test$subsector <- relevel(enve_test$subsector, ref="Retail")
+levels(enve_test$subsector)
+
+enve_test$subsector_safe <- enve_test$subsector
+
+enve_test$subsector <- as.character(enve_test$subsector)
+
+enve_test$subsector[enve_test$subsector %in%
+                      c("Mining",
+                        "Utilities",
+                        "Construction")] <- "Industry"
+
+enve_test$subsector[enve_test$subsector %in%
+                      c("Media",
+                        "Maintenance",
+                        "Other",
+                        "Corporate",
+                        "Finance",
+                        "Health",
+                        "Leisure",
+                        "Education",
+                        "Prof. services",
+                        "Real estate")] <- "Other serv."
+
+
+enve_test$subsector <- as.factor(enve_test$subsector)
+enve_test$subsector <- relevel(enve_test$subsector, ref="Retail")
+levels(enve_test$subsector)
+summary(enve_test$subsector)
+
+enve_test$years <- 2013 - as.numeric(as.character(enve_all$P3))
+summary(enve_test$years)
+
+intyears <- classInt::classIntervals(enve_test$years, 5, style="quantile")
+enve_test$yearsquant <- cut(enve_test$years, intyears$brks, right=TRUE,
+                            include.lowest = TRUE)
+
+enve_test <- merge(enve_test, state_level_data, by="CVE_ENT", all.x=TRUE)
+
+length(enve_test$extortions[is.na(enve_test$extortions)])
+length(enve_test$bribes[is.na(enve_test$bribes)])
+
+## enve_test$extortions[is.na(enve_test$extortions)] <- 0
+## enve_test$bribes[is.na(enve_test$bribes)] <- 0
+
+summary(enve_test)
+
+```
+
+Next we load incident-level data:
+
+```{r incident-level}
+
+enve_incidents_all <- read.dbf("enve2014delitos_ciega_2014.dbf")
+
+# Selecting only those relevant for extortion (code 10)
+
+enve_incidents_all$delito <- as.integer(as.character(enve_incidents_all$ID_DELITO))
+
+enve_incidents <- enve_incidents_all[enve_incidents_all$delito == 10,]
+
+# Selecting those relevant for our study
+
+incident_df <- data.frame(CVE_UNICA=as.integer(as.character(enve_incidents$ID_CONSECU)))
+
+incident_df$delito <- enve_incidents$delito
+
+incident_df$n_offenders <- enve_incidents$M1_8
+summary(incident_df$n_offenders)
+levels(incident_df$n_offenders) <- c(1:3, "4+", "4+", "4+", "DK/DA")
+summary(incident_df$n_offenders)
+
+incident_df$n_offenders_NA <-  incident_df$n_offenders
+incident_df$n_offenders_NA[is.na(incident_df$n_offenders)] <- "DK/DA"
+summary(incident_df$n_offenders_NA)
+
+incident_df$uk_n_offenders <- incident_df$n_offenders_NA
+levels(incident_df$uk_n_offenders)[1:4] <- "known"
+
+incident_df$n_offenders_num <- enve_incidents$M1_8
+summary(incident_df$n_offenders_num)
+levels(incident_df$n_offenders_num) <- c(1:6, 0)
+summary(incident_df$n_offenders_num)
+incident_df$n_offenders_num[is.na(incident_df$n_offenders_num)] <- 0
+incident_df$n_offenders_num <- as.numeric(as.character(incident_df$n_offenders_num))
+table(incident_df$n_offenders_num)
+
+incident_df$n_offenders_num <- incident_df$n_offenders_num - 1
+
+
+## Data imputation for missing variables?
+
+incident_df$rel_offenders <- enve_incidents$M1_11
+levels(incident_df$rel_offenders) <- c("Known", "Known",
+                                       "Known", "Known",
+                                       "Total stranger", "DK/DA")
+incident_df$rel_offenders <- relevel(incident_df$rel_offenders, ref="Total stranger")
+summary(incident_df$rel_offenders)
+
+incident_df$rel_offenders_NA <- incident_df$rel_offenders
+incident_df$rel_offenders_NA[is.na(incident_df$rel_offenders_NA)] <- "DK/DA"
+summary(incident_df$rel_offenders_NA)
+
+incident_df$had_weapon <- enve_incidents$M1_13
+levels(incident_df$had_weapon) <- c("Yes", "No", "DK/DA")
+incident_df$had_weapon <- relevel(incident_df$had_weapon, ref="No")
+summary(incident_df$had_weapon)
+
+incident_df$had_weapon_NA <- incident_df$had_weapon
+incident_df$had_weapon_NA[is.na(incident_df$had_weapon_NA)] <- "DK/DA"
+summary(incident_df$had_weapon_NA)
+
+incident_df$extortion_type <- as.character(enve_incidents$M5_1)
+incident_df$extortion_type <- as.factor(incident_df$extortion_type)
+levels(incident_df$extortion_type) <- c("Remote", "Remote", "Street",
+                                        "Premises", "Cobro de piso", "Other")
+levels(incident_df$extortion_type)
+summary(incident_df$extortion_type)
+
+incident_df$extortion_type_bin <- as.character(enve_incidents$M5_1)
+incident_df$extortion_type_bin <- as.factor(incident_df$extortion_type_bin)
+levels(incident_df$extortion_type_bin) <- c("Remote", "Remote", "In person",
+                                        "In person", "In person", "Other")
+levels(incident_df$extortion_type_bin)
+summary(incident_df$extortion_type_bin)
+
+incident_df$complied <- enve_incidents$M5_3
+levels(incident_df$complied) <-  c("Yes", "No", "DK/DA")
+incident_df$complied <- relevel(incident_df$complied, ref="No")
+summary(incident_df$complied)
+
+
+incident_df$complied_bin <- enve_incidents$M5_3
+levels(incident_df$complied_bin) <-  c("Yes", "No", NA)
+incident_df$complied_bin <- relevel(incident_df$complied_bin, ref="No")
+summary(incident_df$complied_bin)
+
+incident_df$complied_bin_NA <- incident_df$complied_bin
+incident_df$complied_bin_NA[is.na(incident_df$complied_bin_NA)] <- "No"
+summary(incident_df$complied_bin_NA)
+
+incident_df <- subset(incident_df, extortion_type != "Other")
+incident_df$extortion_type <- droplevels(incident_df$extortion_type)
+incident_df$extortion_type_bin <- droplevels(incident_df$extortion_type_bin)
+
+summary(incident_df)
+```
+
+Next we merge both incident-level and victim-level tables.
+
+```{r incident-victim-merge}
+enve_incvic <- merge(incident_df, enve_test, by="CVE_UNICA")
+
+nrow(enve_incvic)
+nrow(incident_df)
+```
+
+
+# EDA
+
+Very simple tests.
+
+First. Mann-Whitney test of number of offenders and compliance, per ext type.
+
+```{r mann-whitney}
+
+wilcox.test(n_offenders_num ~ complied_bin_NA, data = enve_incvic,
+            subset = n_offenders_num > -1)
+
+wilcox.test(n_offenders_num ~ complied_bin, data = enve_incvic,
+            subset = n_offenders_num > -1)
+
+### according to extortion type
+
+t.test(n_offenders_num ~ complied_bin_NA, data = enve_incvic,
+            subset = n_offenders_num > -1 & extortion_type_bin == "In person")
+
+wilcox.test(n_offenders_num ~ complied_bin_NA, data = enve_incvic,
+            subset = n_offenders_num > -1 & extortion_type_bin == "In person")
+
+t.test(n_offenders_num ~ complied_bin_NA, data = enve_incvic,
+            subset = n_offenders_num > -1 & extortion_type_bin == "Remote")
+
+wilcox.test(n_offenders_num ~ complied_bin_NA, data = enve_incvic,
+            subset = n_offenders_num > -1 & extortion_type_bin == "Remote")
+
+
+# Repeat for excluding na
+
+t.test(n_offenders_num ~ complied_bin, data = enve_incvic,
+            subset = n_offenders_num > -1 & extortion_type_bin == "In person")
+
+wilcox.test(n_offenders_num ~ complied_bin, data = enve_incvic,
+            subset = n_offenders_num > -1 & extortion_type_bin == "In person")
+
+t.test(n_offenders_num ~ complied_bin, data = enve_incvic,
+            subset = n_offenders_num > -1 & extortion_type_bin == "Remote")
+
+wilcox.test(n_offenders_num ~ complied_bin, data = enve_incvic,
+            subset = n_offenders_num > -1 & extortion_type_bin == "Remote")
+
+```
+
+Second. Relationship to offender by ext type.
+
+
+```{r relationship-ext-type}
+comp_rel <- batch_chisq(enve_incvic, "complied_bin_NA", "rel_offenders_NA")
+comp_rel
+
+print_kables(chisq_list(comp_rel, print_option = "pandoc", option = "observed"))
+print_kables(chisq_list(comp_rel, print_option = "pandoc", option = "ratio"))
+
+# Subset for in person extortions
+
+comp_rel_ip <- batch_chisq(subset(enve_incvic, extortion_type_bin == "In person"), 
+                           "complied_bin_NA", "rel_offenders_NA")
+comp_rel_ip
+
+print_kables(chisq_list(comp_rel_ip, print_option = "pandoc", option = "observed"))
+print_kables(chisq_list(comp_rel_ip, print_option = "pandoc", option = "ratio"))
+
+## subset for remote
+
+comp_rel_rmt <- batch_chisq(subset(enve_incvic, extortion_type_bin == "Remote"), 
+                           "complied_bin_NA", "rel_offenders_NA")
+comp_rel_rmt
+
+print_kables(chisq_list(comp_rel_rmt, print_option = "pandoc", option = "observed"))
+print_kables(chisq_list(comp_rel_rmt, print_option = "pandoc", option = "ratio"))
+
+```
+
+Third. Redo situational aggravants (weapons et al) using in person subset only.
+
+
+```{r aggravants}
+
+comp_wpn <- batch_chisq(enve_incvic, "complied_bin_NA", "had_weapon_NA")
+comp_wpn
+
+print_kables(chisq_list(comp_wpn, print_option = "pandoc", option = "observed"))
+print_kables(chisq_list(comp_wpn, print_option = "pandoc", option = "ratio"))
+
+# Subset for in person extortions
+
+comp_wpn_ip <- batch_chisq(subset(enve_incvic, extortion_type_bin == "In person"), 
+                           "complied_bin_NA", "had_weapon_NA")
+comp_wpn_ip
+
+print_kables(chisq_list(comp_wpn_ip, print_option = "pandoc", option = "observed"))
+print_kables(chisq_list(comp_wpn_ip, print_option = "pandoc", option = "ratio"))
+
+## subset for remote
+
+comp_wpn_rmt <- batch_chisq(subset(enve_incvic, extortion_type_bin == "Remote"), 
+                           "complied_bin_NA", "had_weapon_NA")
+comp_wpn_rmt
+
+print_kables(chisq_list(comp_wpn_rmt, print_option = "pandoc", option = "observed"))
+print_kables(chisq_list(comp_wpn_rmt, print_option = "pandoc", option = "ratio"))
+
+```
+
+# Models
+
+Do the best model and checks using RMS first. Then Zelig.
+
+First we'll try a single level logistic and see how post-hoc analyses work.
+
+As we have many missing values, will start with a saturated model and drop them sequentially, either by hand or through a function.
+
+
+First we start with the most restricted not excluding weapons, violence or offender variables.
+
+```{r subset-no-NA}
+
+## datasets with no NA values first.
+
+nacols <- colnames(enve_incvic)[colSums(is.na(enve_incvic)) > 0]
+
+nonacols <- names(enve_incvic)[!(names(enve_incvic) %in% nacols)]
+
+enve_incvic %>%
+    select(nonacols) -> enve_nona
+
+summary(enve_nona)
+nrow(enve_nona)
+nrow(enve_nona[complete.cases(enve_nona),])
+nrow(enve_nona[complete.cases(enve_incvic),])
+
+## Data structure
+
+"number of incidents"
+nrow(enve_nona)
+
+"incidents per business"
+table(table(enve_nona$CVE_UNICA))
+enve_nona %>%
+    count(CVE_UNICA) %>%
+    summarise(min(n),
+              max(n),
+              mean(n),
+              n())
+
+"number of incidents per state"
+enve_nona %>%
+    count(CVE_ENT) %>%
+    summarise(min(n),
+              mean(n),
+              max(n),
+              n())
+
+"number of businesses per state"
+enve_nona %>%
+    count(CVE_ENT, CVE_UNICA) %>%
+    count(CVE_ENT) %>%
+    summarise(min(nn),
+              mean(nn),
+              max(nn))
+
+```
+
+
+First the canonical model with the state level variables identified in JQC manuscript.
+
+A polynomial for the years variable creates too large estimates. Better to use yearsquant or log years.
+
+
+
+```{r models-1}
+
+
+compliance_formula <- complied_bin_NA ~ extortion_type +
+                                        n_offenders_NA +
+                                        had_weapon_NA +
+                                        mylog(extortions) +
+                                        mylog(bribes) +
+                                        subsector +
+                                        size +
+                                        yearsquant +
+                                        mylog(bribes_abvic, TRUE) +
+                                        mylog(armas, TRUE) +
+                                        mylog(drogas, TRUE) +
+                                        mylog(poblacion, TRUE) +
+                                        mylog(N, TRUE) +
+                                        scale(General, scale = FALSE) +
+                                        scale(Derecho, scale = FALSE)
+
+m1 <- glm(formula = compliance_formula, data = enve_nona, family = binomial())  
+
+tmbresults(m1)
+vif(m1, data = enve_nona) 
+
+msum <- summary(m1)
+
+dropalltest(m1)
+
+m1_step <- step(m1, direction = "both")
+
+tmbresults(m1_step)
+
+waldtest(m1_step, m1, test = "Chisq")
+
+```
+
+```{r models-2-by-level}
+
+### Formula for levels
+
+compliance_formula_inc <- complied_bin_NA ~ extortion_type +
+                                        n_offenders_NA +
+                                        had_weapon_NA
+
+## business only
+
+compliance_formula_bus <- complied_bin_NA ~ mylog(extortions) +
+                                        mylog(bribes) +
+                                        subsector +
+                                        size +
+                                        yearsquant
+
+
+## state only
+
+compliance_formula_state <- complied_bin_NA ~ mylog(bribes_abvic, TRUE) +
+                                        mylog(armas, TRUE) +
+                                        mylog(drogas, TRUE) +
+                                        mylog(poblacion, TRUE) +
+                                        mylog(N, TRUE) +
+                                        scale(General, scale = FALSE) +
+                                        scale(Derecho, scale = FALSE)
+
+## progressive add of levels
+
+compliance_formula_inc_bus <- complied_bin_NA ~ extortion_type +
+                                        n_offenders_NA +
+                                        had_weapon_NA +
+                                        mylog(extortions) +
+                                        mylog(bribes) +
+                                        subsector +
+                                        size +
+                                        yearsquant
+
+## incident level vars only
+
+m1_inc <- update(m1, compliance_formula_inc)
+tmbresults(m1_inc)
+
+dropalltest(m1_inc)
+
+waldtest(m1_inc, m1, test = "Chisq")
+
+# bus level vars only
+
+m1_bus <- update(m1, compliance_formula_bus)
+tmbresults(m1_bus)
+
+dropalltest(m1_bus)
+
+# state level vars only
+
+m1_state <- update(m1, compliance_formula_state)
+tmbresults(m1_state)
+
+dropalltest(m1_state)
+
+#### progressive
+
+m1_inc_bus <- update(m1, compliance_formula_inc_bus)
+tmbresults(m1_inc_bus)
+dropalltest(m1_inc_bus)
+
+### Tests significance of state
+waldtest(m1_inc_bus, m1, test = "Chisq")
+
+### Tests significance of busness (in absence of state)
+
+waldtest(m1_inc, m1_inc_bus, test = "Chisq")
+
+# Tests business and state levels
+waldtest(m1_inc, m1_inc_bus, m1, test = "Chisq")
+
+mnull <- update(m1, . ~ 1)
+
+# Tests all levels
+waldtest(mnull, m1_inc, m1_inc_bus, m1, test = "Chisq")
+
+```
+
+# Use Robust Clustered Errors
+
+Come up with a systematic approach to calculate robust clustered SEs using vcovCL, vcovBS, and bootCL
+
+
+```{r clustered-SE-asym}
+
+# m1, m1step, m1_inc,  m1_bus, m1_state, m1_inc_bus
+
+#### Asymptotic Cluster SE
+## Individual-level clustering
+
+m1CL <- summaryCL(m1, ~ CVE_UNICA)
+m1CL
+
+m1_stepCL <- summaryCL(m1_step, ~ CVE_UNICA)
+m1_stepCL
+
+waldtest(m1_step, m1, test = "Chisq", vcov = vcov(m1CL))
+
+# by levels
+
+## incident level vars only
+
+m1_incCL <- summaryCL(m1_inc, ~ CVE_UNICA)
+
+m1_incCL
+
+waldtest(m1_inc, m1, test = "Chisq", vcov = vcov(m1CL))
+
+# bus level vars only
+
+m1_busCL <- summaryCL(m1_bus, ~ CVE_UNICA)
+m1_busCL
+
+# state level vars only
+
+m1_stateCL <- summaryCL(m1_state, ~ CVE_UNICA)
+m1_stateCL
+
+#### progressive
+
+m1_inc_busCL <- summaryCL(m1_inc_bus, ~ CVE_UNICA)
+m1_inc_busCL
+
+
+### Tests significance of state
+waldtest(m1_inc_bus, m1, test = "Chisq", vcov = vcov(m1CL))
+
+### Tests significance of busness (in absence of state)
+
+waldtest(m1_inc, m1_inc_bus, test = "Chisq", vcov = vcov(m1_inc_busCL))
+
+# Tests business and state levels
+waldtest(m1_inc_bus, m1, test = "Chisq", vcov = vcov(m1CL))
+
+
+### Now repeat for vcovBS 
+
+# m1, m1step, m1_inc,  m1_bus, m1_state, m1_inc_bus
+
+#### Bootstrapped Cluster SE - from sandwich package
+## Individual-level clustering
+
+m1BS <- summaryCL(m1, ~ CVE_UNICA, boots = TRUE)
+m1BS
+
+m1_stepBS <- summaryCL(m1_step, ~ CVE_UNICA, boots = TRUE)
+m1_stepBS
+
+waldtest(m1_step, m1, test = "Chisq", vcov = vcov(m1BS)) 
+
+
+# by levels
+
+## incident level vars only
+
+m1_incBS <- summaryCL(m1_inc, ~ CVE_UNICA, boots = TRUE)
+m1_incBS
+
+waldtest(m1_inc, m1, test = "Chisq", vcov = vcov(m1BS))
+
+# bus level vars only
+
+m1_busBS <- summaryCL(m1_bus, ~ CVE_UNICA, boots = TRUE)
+m1_busBS
+
+# state level vars only
+
+m1_stateBS <- summaryCL(m1_state, ~ CVE_UNICA, boots = TRUE)
+m1_stateBS
+
+#### progressive
+
+m1_inc_busBS <- summaryCL(m1_inc_bus, ~ CVE_UNICA, boots = TRUE)
+m1_inc_busBS
+
+
+### Tests significance of state
+waldtest(m1_inc_bus, m1, test = "Chisq", vcov = vcov(m1BS))
+
+### Tests significance of busness (in absence of state)
+
+waldtest(m1_inc, m1_inc_bus, test = "Chisq", vcov = vcov(m1_inc_busBS))
+
+# Tests business and state levels
+waldtest(m1_inc_bus, m1, test = "Chisq", vcov = vcov(m1BS))
+
+
+
+
+```
+
+
+
+# Save all to an Rdata file for future analyses
+
+```{r save-all}
+
+nowtime <- Sys.time()
+print(nowtime)
+
+filename <- paste0("Estevez_ENVE_Compliance_", nowtime, ".RData")
+filename
+save.image(file = filename)
+
+```
+
+
+# Benchmark stats
+
+```{r timing, cache=FALSE}
+endtime <- proc.time()
+time <- endtime - starttime
+time
+
+print(paste("the script took", round(time[3]/60,2),
+              "minutes to run.", sep=" "))
+```

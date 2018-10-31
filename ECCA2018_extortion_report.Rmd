@@ -54,7 +54,14 @@ Area-level characteristics:
 - State
 - State homicides
 - State population (control)
-Add more stuff here
+
+
+This script only focuses on running the favoured regression model on incident-level data using clustered standard errors.
+
+Will explore the different options regarding packages.
+
+As using clustered se, multilevel framework is not required.
+
 
 # Set up, data input and pre-process
 
@@ -93,6 +100,7 @@ getURL <- RCurl::getURL
 
 sessionInfo()
 
+
 ```
 
 required packages thus far:
@@ -100,7 +108,6 @@ required packages thus far:
 - `foreign`
 - `classInt`
 - `tidyverse`
-- `glmmTMB`
 - `RCurl`
 - `victim`
 - `knitr`
@@ -110,6 +117,9 @@ required packages thus far:
 - `devtools`
 - `Cairo`
 - `downloader`
+
+
+
 
 ```{r functions}
 
