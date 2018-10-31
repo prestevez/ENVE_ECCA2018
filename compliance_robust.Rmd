@@ -13,7 +13,7 @@ pandoc_args: "--smart"
 knitr::opts_chunk$set(echo = TRUE,
                       comment="",
                       cache=TRUE,
-                      dev=c("png", "CairoPDF"),
+                      #dev=c("png", "CairoPDF"),
                       error=TRUE)
 options(knitr.kable.NA = '---')
 ```
@@ -76,7 +76,7 @@ Next we load the packages that we will use.
 
 ```{r packages}
 
-library(Cairo)
+#library(Cairo)
 #library(glmmTMB)
 library(victim)
 library(tidyverse)
@@ -101,7 +101,6 @@ required packages thus far:
 - `foreign`
 - `classInt`
 - `tidyverse`
-- `glmmTMB`
 - `RCurl`
 - `victim`
 - `knitr`
@@ -109,7 +108,7 @@ required packages thus far:
 - `lazyeval`
 - `car`
 - `devtools`
-- `Cairo`
+- `sandwich`
 - `downloader`
 
 
@@ -653,14 +652,6 @@ print_kables(chisq_list(comp_wpn_rmt, print_option = "pandoc", option = "ratio")
 
 # Models
 
-Do the best model and checks using RMS first. Then Zelig.
-
-First we'll try a single level logistic and see how post-hoc analyses work.
-
-As we have many missing values, will start with a saturated model and drop them sequentially, either by hand or through a function.
-
-
-First we start with the most restricted not excluding weapons, violence or offender variables.
 
 ```{r subset-no-NA}
 
@@ -839,7 +830,9 @@ waldtest(mnull, m1_inc, m1_inc_bus, m1, test = "Chisq")
 
 # Use Robust Clustered Errors
 
-Come up with a systematic approach to calculate robust clustered SEs using vcovCL, vcovBS, and bootCL
+Come up with a systematic approach to calculate robust clustered SEs using vcovCL and vcovBS.
+
+Cluster by business and state.
 
 
 ```{r clustered-SE-asym}
@@ -849,10 +842,12 @@ Come up with a systematic approach to calculate robust clustered SEs using vcovC
 #### Asymptotic Cluster SE
 ## Individual-level clustering
 
-m1CL <- summaryCL(m1, ~ CVE_UNICA)
+cluster_form <- ~ CVE_UNICA + CVE_ENT
+
+m1CL <- summaryCL(m1, cluster_form)
 m1CL
 
-m1_stepCL <- summaryCL(m1_step, ~ CVE_UNICA)
+m1_stepCL <- summaryCL(m1_step, cluster_form)
 m1_stepCL
 
 waldtest(m1_step, m1, test = "Chisq", vcov = vcov(m1CL))
@@ -861,7 +856,7 @@ waldtest(m1_step, m1, test = "Chisq", vcov = vcov(m1CL))
 
 ## incident level vars only
 
-m1_incCL <- summaryCL(m1_inc, ~ CVE_UNICA)
+m1_incCL <- summaryCL(m1_inc, cluster_form)
 
 m1_incCL
 
@@ -869,17 +864,17 @@ waldtest(m1_inc, m1, test = "Chisq", vcov = vcov(m1CL))
 
 # bus level vars only
 
-m1_busCL <- summaryCL(m1_bus, ~ CVE_UNICA)
+m1_busCL <- summaryCL(m1_bus, cluster_form)
 m1_busCL
 
 # state level vars only
 
-m1_stateCL <- summaryCL(m1_state, ~ CVE_UNICA)
+m1_stateCL <- summaryCL(m1_state, cluster_form)
 m1_stateCL
 
 #### progressive
 
-m1_inc_busCL <- summaryCL(m1_inc_bus, ~ CVE_UNICA)
+m1_inc_busCL <- summaryCL(m1_inc_bus, cluster_form)
 m1_inc_busCL
 
 
@@ -901,10 +896,10 @@ waldtest(m1_inc_bus, m1, test = "Chisq", vcov = vcov(m1CL))
 #### Bootstrapped Cluster SE - from sandwich package
 ## Individual-level clustering
 
-m1BS <- summaryCL(m1, ~ CVE_UNICA, boots = TRUE)
+m1BS <- summaryCL(m1, cluster_form, boots = TRUE)
 m1BS
 
-m1_stepBS <- summaryCL(m1_step, ~ CVE_UNICA, boots = TRUE)
+m1_stepBS <- summaryCL(m1_step, cluster_form, boots = TRUE)
 m1_stepBS
 
 waldtest(m1_step, m1, test = "Chisq", vcov = vcov(m1BS)) 
@@ -914,24 +909,24 @@ waldtest(m1_step, m1, test = "Chisq", vcov = vcov(m1BS))
 
 ## incident level vars only
 
-m1_incBS <- summaryCL(m1_inc, ~ CVE_UNICA, boots = TRUE)
+m1_incBS <- summaryCL(m1_inc, cluster_form, boots = TRUE)
 m1_incBS
 
 waldtest(m1_inc, m1, test = "Chisq", vcov = vcov(m1BS))
 
 # bus level vars only
 
-m1_busBS <- summaryCL(m1_bus, ~ CVE_UNICA, boots = TRUE)
+m1_busBS <- summaryCL(m1_bus, cluster_form, boots = TRUE)
 m1_busBS
 
 # state level vars only
 
-m1_stateBS <- summaryCL(m1_state, ~ CVE_UNICA, boots = TRUE)
+m1_stateBS <- summaryCL(m1_state, cluster_form, boots = TRUE)
 m1_stateBS
 
 #### progressive
 
-m1_inc_busBS <- summaryCL(m1_inc_bus, ~ CVE_UNICA, boots = TRUE)
+m1_inc_busBS <- summaryCL(m1_inc_bus, cluster_form, boots = TRUE)
 m1_inc_busBS
 
 

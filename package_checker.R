@@ -3,7 +3,7 @@
 packages <- c("devtools",
               "foreign",
               "tidyverse",
-              "Cairo",
+              #"Cairo",
               "knitr",
               "lazyeval",
               "RCurl",
